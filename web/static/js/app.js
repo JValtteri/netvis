@@ -17,6 +17,76 @@ function getMousePos(e) {
     };
 }
 
+// Camera maps world coordinates (host positions) to screen coordinates.
+// screen = world * scale + offset
+const camera = {
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+    minScale: 0.1,
+    maxScale: 5
+};
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function screenToWorld(pos) {
+    return {
+        x: (pos.x - camera.offsetX) / camera.scale,
+        y: (pos.y - camera.offsetY) / camera.scale
+    };
+}
+
+function zoomAt(screenX, screenY, factor) {
+    const scale = clamp(camera.scale * factor, camera.minScale, camera.maxScale);
+    if (scale === camera.scale) {
+        return;
+    }
+    const worldX = (screenX - camera.offsetX) / camera.scale;
+    const worldY = (screenY - camera.offsetY) / camera.scale;
+    camera.scale = scale;
+    camera.offsetX = screenX - worldX * scale;
+    camera.offsetY = screenY - worldY * scale;
+}
+
+function zoomBy(factor) {
+    zoomAt(canvas.width / 2, canvas.height / 2, factor);
+}
+
+function fitToView() {
+    const hostArray = Array.from(hosts.values());
+    if (hostArray.length === 0) {
+        camera.scale = 1;
+        camera.offsetX = 0;
+        camera.offsetY = 0;
+        return;
+    }
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const host of hostArray) {
+        const bounds = hostLabelBounds(host);
+        minX = Math.min(minX, host.x - bounds.halfWidth);
+        maxX = Math.max(maxX, host.x + bounds.halfWidth);
+        minY = Math.min(minY, host.y - bounds.top);
+        maxY = Math.max(maxY, host.y + bounds.bottom);
+    }
+
+    const padding = 40;
+    const spanX = Math.max(1, maxX - minX);
+    const spanY = Math.max(1, maxY - minY);
+    // Don't over-magnify a nearly empty graph; just centre it.
+    const scale = clamp(
+        Math.min((canvas.width - padding * 2) / spanX, (canvas.height - padding * 2) / spanY),
+        camera.minScale,
+        Math.min(camera.maxScale, 2)
+    );
+
+    camera.scale = scale;
+    camera.offsetX = canvas.width / 2 - ((minX + maxX) / 2) * scale;
+    camera.offsetY = canvas.height / 2 - ((minY + maxY) / 2) * scale;
+}
+
 let pressedHost = null;
 let pressX = 0;
 let pressY = 0;
@@ -93,14 +163,15 @@ function fallbackCopy(text) {
 }
 
 canvas.addEventListener('mousedown', (e) => {
-    const pos = getMousePos(e);
+    const screen = getMousePos(e);
+    const pos = screenToWorld(screen);
     const host = hostAtPosition(pos);
     if (host) {
         draggedHost = host;
         pressedHost = host;
         dragMoved = false;
-        pressX = pos.x;
-        pressY = pos.y;
+        pressX = screen.x;
+        pressY = screen.y;
         dragOffsetX = pos.x - host.x;
         dragOffsetY = pos.y - host.y;
         host.vx = 0;
@@ -109,17 +180,18 @@ canvas.addEventListener('mousedown', (e) => {
 });
 
 canvas.addEventListener('mousemove', (e) => {
-    const pos = getMousePos(e);
+    const screen = getMousePos(e);
+    const pos = screenToWorld(screen);
     if (!draggedHost) {
         canvas.style.cursor = hostAtPosition(pos) ? 'grab' : 'default';
         return;
     }
-    if (Math.sqrt((pos.x - pressX) ** 2 + (pos.y - pressY) ** 2) > 4) {
+    if (Math.sqrt((screen.x - pressX) ** 2 + (screen.y - pressY) ** 2) > 4) {
         dragMoved = true;
     }
     canvas.style.cursor = 'grabbing';
-    draggedHost.x = Math.max(draggedHost.radius, Math.min(canvas.width - draggedHost.radius, pos.x - dragOffsetX));
-    draggedHost.y = Math.max(draggedHost.radius, Math.min(canvas.height - draggedHost.radius, pos.y - dragOffsetY));
+    draggedHost.x = clamp(pos.x - dragOffsetX, draggedHost.radius, canvas.width - draggedHost.radius);
+    draggedHost.y = clamp(pos.y - dragOffsetY, draggedHost.radius, canvas.height - draggedHost.radius);
 });
 
 window.addEventListener('mouseup', () => {
@@ -132,9 +204,137 @@ window.addEventListener('mouseup', () => {
     canvas.style.cursor = 'default';
 });
 
+// Wheel zoom keeps the point under the cursor fixed.
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
+}, { passive: false });
+
+// Touch: one finger drags a host, two fingers pinch to zoom and pan.
+let pinchState = null;
+let touchDragging = false;
+
+function touchPoints(e) {
+    const rect = canvas.getBoundingClientRect();
+    return Array.from(e.touches).map((touch) => ({
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top
+    }));
+}
+
+canvas.addEventListener('touchstart', (e) => {
+    const points = touchPoints(e);
+    if (points.length >= 2) {
+        e.preventDefault();
+        // A pinch supersedes any single-finger drag.
+        draggedHost = null;
+        pressedHost = null;
+        touchDragging = false;
+        dragMoved = false;
+
+        const mid = {
+            x: (points[0].x + points[1].x) / 2,
+            y: (points[0].y + points[1].y) / 2
+        };
+        const dist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) || 1;
+        pinchState = {
+            startDist: dist,
+            startScale: camera.scale,
+            worldMid: screenToWorld(mid)
+        };
+        return;
+    }
+
+    if (points.length === 1) {
+        e.preventDefault();
+        const pos = screenToWorld(points[0]);
+        const host = hostAtPosition(pos);
+        if (host) {
+            touchDragging = true;
+            draggedHost = host;
+            pressedHost = host;
+            dragMoved = false;
+            pressX = points[0].x;
+            pressY = points[0].y;
+            dragOffsetX = pos.x - host.x;
+            dragOffsetY = pos.y - host.y;
+            host.vx = 0;
+            host.vy = 0;
+        }
+    }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+    const points = touchPoints(e);
+
+    if (pinchState && points.length >= 2) {
+        e.preventDefault();
+        const mid = {
+            x: (points[0].x + points[1].x) / 2,
+            y: (points[0].y + points[1].y) / 2
+        };
+        const dist = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) || 1;
+        const scale = clamp(
+            pinchState.startScale * (dist / pinchState.startDist),
+            camera.minScale,
+            camera.maxScale
+        );
+        camera.scale = scale;
+        camera.offsetX = mid.x - pinchState.worldMid.x * scale;
+        camera.offsetY = mid.y - pinchState.worldMid.y * scale;
+        return;
+    }
+
+    if (touchDragging && draggedHost && points.length === 1) {
+        e.preventDefault();
+        if (Math.hypot(points[0].x - pressX, points[0].y - pressY) > 6) {
+            dragMoved = true;
+        }
+        const pos = screenToWorld(points[0]);
+        draggedHost.x = clamp(pos.x - dragOffsetX, draggedHost.radius, canvas.width - draggedHost.radius);
+        draggedHost.y = clamp(pos.y - dragOffsetY, draggedHost.radius, canvas.height - draggedHost.radius);
+    }
+}, { passive: false });
+
+function endTouch() {
+    if (touchDragging) {
+        if (pressedHost && !dragMoved) {
+            copyToClipboard(pressedHost.ip);
+        }
+    }
+    pinchState = null;
+    touchDragging = false;
+    pressedHost = null;
+    draggedHost = null;
+}
+
+canvas.addEventListener('touchend', (e) => {
+    if (e.touches.length === 0) {
+        endTouch();
+    } else if (e.touches.length === 1 && pinchState) {
+        // Dropped to one finger; wait for a fresh gesture.
+        pinchState = null;
+    }
+}, { passive: false });
+
+canvas.addEventListener('touchcancel', endTouch, { passive: false });
+
+document.getElementById('zoomIn').addEventListener('click', () => zoomBy(1.25));
+document.getElementById('zoomOut').addEventListener('click', () => zoomBy(1 / 1.25));
+document.getElementById('fitView').addEventListener('click', fitToView);
+
 const hosts = new Map();
 const edges = new Map();
 const particles = [];
+const serverIPs = new Set();
+
+// Traffic to or from the NetVis server itself is drawn as a special edge
+// instead of individual packets.
+function isServerEdge(srcIP, dstIP) {
+    return serverIPs.has(srcIP) || serverIPs.has(dstIP);
+}
 
 const hostCountEl = document.getElementById('hostCount');
 const edgeCountEl = document.getElementById('edgeCount');
@@ -296,11 +496,14 @@ function hostLabelBounds(host) {
     const labelWidth = Math.max(ipWidth, hostnameWidth);
     const width = Math.max(host.radius * 2, labelWidth);
     const padding = Math.max(4, labelWidth * 0.1);
+    // Extra vertical breathing room keeps the IP label of one host from
+    // touching the hostname label of another.
+    const verticalMargin = 12;
 
     return {
         halfWidth: width / 2 + padding,
-        top: host.radius + 16 + padding * 0.5,
-        bottom: host.radius + 18 + padding * 0.5
+        top: host.radius + 16 + padding * 0.5 + verticalMargin,
+        bottom: host.radius + 18 + padding * 0.5 + verticalMargin
     };
 }
 
@@ -371,6 +574,12 @@ ws.onmessage = (event) => {
     
     if (msg.type === 'snapshot') {
         const data = msg.data;
+        serverIPs.clear();
+        if (data.serverIPs) {
+            for (const ip of data.serverIPs) {
+                serverIPs.add(ip);
+            }
+        }
         if (data.hosts) {
             for (const h of data.hosts) {
                 if (!hosts.has(h.ip)) {
@@ -443,16 +652,19 @@ ws.onmessage = (event) => {
             e.bytes += ev.bytes;
         }
         
-        // Create particle
-        particles.push({
-            srcIP: ev.srcIP,
-            dstIP: ev.dstIP,
-            progress: 0,
-            speed: settings.packetSpeed,
-            size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)) * settings.packetSizeScale,
-            color: protocolColors[ev.proto] || protocolColors.OTHER,
-            life: 1.0
-        });
+        // Packets to/from the NetVis server are represented by a glowing
+        // edge, so don't animate individual particles for them.
+        if (!isServerEdge(ev.srcIP, ev.dstIP)) {
+            particles.push({
+                srcIP: ev.srcIP,
+                dstIP: ev.dstIP,
+                progress: 0,
+                speed: settings.packetSpeed,
+                size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)) * settings.packetSizeScale,
+                color: protocolColors[ev.proto] || protocolColors.OTHER,
+                life: 1.0
+            });
+        }
         
         updateStats();
     }
@@ -470,35 +682,14 @@ function animate() {
     const dt = Math.min((frameTime - lastFrameTime) / 1000, 0.1);
     lastFrameTime = frameTime;
 
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
+
+    // Draw the world through the camera transform.
+    ctx.setTransform(camera.scale, 0, 0, camera.scale, camera.offsetX, camera.offsetY);
+
     const hostArray = Array.from(hosts.values());
-    
-    // If hosts won't fit, zoom out by scaling positions
-    if (hostArray.length > 0) {
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (const host of hostArray) {
-            if (host.x < minX) minX = host.x;
-            if (host.x > maxX) maxX = host.x;
-            if (host.y < minY) minY = host.y;
-            if (host.y > maxY) maxY = host.y;
-        }
-        const spanX = Math.max(1, maxX - minX);
-        const spanY = Math.max(1, maxY - minY);
-        const padding = 80;
-        const scaleX = (canvas.width - padding * 2) / spanX;
-        const scaleY = (canvas.height - padding * 2) / spanY;
-        const scale = Math.min(scaleX, scaleY, 1.0);
-        if (scale < 1.0) {
-            const centerX = (minX + maxX) / 2;
-            const centerY = (minY + maxY) / 2;
-            for (const host of hostArray) {
-                host.x = (host.x - centerX) * scale + canvas.width / 2;
-                host.y = (host.y - centerY) * scale + canvas.height / 2;
-            }
-        }
-    }
     
     // Attraction force along connections.
     // Local<->local connections pull strongest, local<->external medium,
@@ -541,13 +732,21 @@ function animate() {
         }
     }
     
-    // Update host positions (gentle drift) with collision avoidance
+    // Update host positions (gentle drift) with collision avoidance.
+    // Drag (friction) bleeds off velocity so blobs settle instead of
+    // creeping forward forever.
+    const dragFactor = Math.exp(-dt / 0.45);
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
         if (host === draggedHost) continue;
-        
-        host.x += host.vx || 0;
-        host.y += host.vy || 0;
+
+        host.vx = (host.vx || 0) * dragFactor;
+        host.vy = (host.vy || 0) * dragFactor;
+        if (Math.abs(host.vx) < 0.001) host.vx = 0;
+        if (Math.abs(host.vy) < 0.001) host.vy = 0;
+
+        host.x += host.vx * dt * 60;
+        host.y += host.vy * dt * 60;
         
         if (host.x < host.radius + 60 || host.x > canvas.width - host.radius - 60) {
             host.vx = -(host.vx || 0);
@@ -618,10 +817,14 @@ function animate() {
         }
     }
     
-    // Draw edges
+    // Draw edges. Regular connections are thin gray lines; traffic to or
+    // from the NetVis server itself is a thin glowing yellow line.
     ctx.strokeStyle = 'rgba(55, 55, 55, 0.9)';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1 / camera.scale;
     for (const edge of edges.values()) {
+        if (isServerEdge(edge.srcIP, edge.dstIP)) {
+            continue;
+        }
         const src = hosts.get(edge.srcIP);
         const dst = hosts.get(edge.dstIP);
         if (src && dst) {
@@ -631,6 +834,26 @@ function animate() {
             ctx.stroke();
         }
     }
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 220, 80, 0.95)';
+    ctx.lineWidth = 1.2 / camera.scale;
+    ctx.shadowBlur = 10 / camera.scale;
+    ctx.shadowColor = 'rgba(255, 220, 80, 0.9)';
+    for (const edge of edges.values()) {
+        if (!isServerEdge(edge.srcIP, edge.dstIP)) {
+            continue;
+        }
+        const src = hosts.get(edge.srcIP);
+        const dst = hosts.get(edge.dstIP);
+        if (src && dst) {
+            ctx.beginPath();
+            ctx.moveTo(src.x, src.y);
+            ctx.lineTo(dst.x, dst.y);
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
     
     // Draw particles
     for (let i = particles.length - 1; i >= 0; i--) {
@@ -646,6 +869,12 @@ function animate() {
         const src = hosts.get(p.srcIP);
         const dst = hosts.get(p.dstIP);
         if (!src || !dst) {
+            particles.splice(i, 1);
+            continue;
+        }
+
+        // Never animate packets to/from the NetVis server itself.
+        if (isServerEdge(p.srcIP, p.dstIP)) {
             particles.splice(i, 1);
             continue;
         }

@@ -16,7 +16,7 @@ packets.
 | --- | --- | --- |
 | CLI | `cmd/netvis/` | Parse flags (`-iface`, `-filter`, `-addr`), start capture and HTTP server, handle shutdown. |
 | Capture | `internal/capture/` | Open an interface via libpcap (cgo + gopacket), apply BPF filters, parse L3/L4, emit normalized events. |
-| Graph | `internal/graph/` | Thread-safe host/edge store, traffic counters, async display-name resolution (reverse DNS for local hosts, whois organization for external hosts), snapshots. |
+| Graph | `internal/graph/` | Thread-safe host/edge store, traffic counters, async display-name resolution (reverse DNS for local hosts, whois organization with reverse-DNS fallback for external hosts), snapshots. |
 | Server | `internal/server/` | Static file serving, WebSocket upgrade, hub broadcast, client ping/pong. |
 | Frontend | `web/static/` | Canvas renderer, force layout, interactions, settings UI. |
 
@@ -44,7 +44,7 @@ Each captured packet becomes an event:
 WebSocket messages are wrapped as:
 
 - `{"type": "packet", "data": <event>}`
-- `{"type": "snapshot", "data": {"hosts": [...], "edges": [...]}}`
+- `{"type": "snapshot", "data": {"hosts": [...], "edges": [...], "serverIPs": [...]}}`
 - `{"type": "host", "data": <host>}` — sent when a host's display name is resolved
   asynchronously.
 
@@ -55,13 +55,13 @@ WebSocket messages are wrapped as:
 - Each observed host is a blob identified by IP (no duplicates) and displayed
   with its IP.
 - Display name resolution is asynchronous and cached:
-  - **Local/private hosts** use reverse DNS for a hostname.
+  - **Local/private hosts** use reverse DNS for a hostname (3 s timeout).
   - **External hosts** use a whois lookup: query `whois.iana.org` for the
     authoritative RIR server, then query that server and extract the
     organization (`org-name`, `OrgName`, `organization`, `owner`, `descr`, or
-    `netname`).
+    `netname`). If no organization is found, reverse DNS is used as a fallback.
   - If no name is available the label is left empty. Resolution results are
-    pushed to clients as `host` messages.
+    pushed to clients as `host` messages and fill in the label when they arrive.
 - Colour coding:
   - **Green** — local/private-network host.
   - **Blue** — remote/external host.
@@ -81,10 +81,14 @@ WebSocket messages are wrapped as:
 
 - Each unique ordered IP pair (source → destination) is an edge.
 - Edges are drawn behind hosts and accumulate packet count and byte totals.
+- Edges that touch one of the NetVis server's own interface addresses (reported
+  in the snapshot as `serverIPs`) are rendered as a thin glowing yellow line.
 
 ### Packets
 
-- Each packet is a particle travelling from source to destination.
+- Each packet is a particle travelling from source to destination, except
+  traffic to/from the NetVis server itself, which has no particles (the glowing
+  edge represents it).
 - Particle position is recalculated from the live host positions every frame, so
   fast-moving hosts are not missed.
 - Colour is determined by protocol: TCP (blue), UDP (green), ICMP (orange),
@@ -99,10 +103,13 @@ WebSocket messages are wrapped as:
   configurable strengths.
 - Collision resolution uses each host's combined blob + IP/hostname label
   bounding box as a soft repulsion (a fraction of the overlap is resolved per
-  frame). The collision area scales with the rendered label content.
+  frame). The collision area scales with the rendered label content, with extra
+  vertical spacing so IP/hostname labels on nearby hosts don't touch.
 - Long IPv6 address labels are truncated for display; copying a host still uses
   the full address.
-- If hosts do not fit the viewport, positions are scaled ("zoomed out") to fit.
+- Blob velocity is damped by drag, so blobs settle instead of creeping forward.
+- The view is controlled by a camera (scale + offset) rather than by scaling host
+  positions. Zoom/fit leaves graph coordinates independent of the viewport.
 - Dragging a blob repositions it and temporarily excludes it from physics.
 - Clicking a host or its labels copies the IP to the clipboard and shows a fading
   toast notification.
@@ -138,6 +145,13 @@ Buttons:
 - **Remove passive hosts** — hosts with no activity beyond the passive timeout.
 
 Removing hosts also prunes edges that reference them.
+
+### View controls (bottom-right)
+
+- `+` / `−` buttons zoom in and out around the viewport centre.
+- The frame button fits all hosts and their labels into view.
+- The mouse wheel zooms toward the cursor; on touch devices a two-finger pinch
+  zooms and pans while one finger drags a host.
 
 ## Project Status
 
@@ -180,9 +194,9 @@ frontend, and integration steps below are complete.
 - [x] Edges rendered between IP pairs behind hosts.
 - [x] Animated particles with protocol colour and size based on packet bytes.
 - [x] WebSocket connection with snapshot + incremental updates.
-- [x] Traffic-scaled host sizes, mass-based physics, collision avoidance, fit-to-
-      viewport zoom.
-- [x] Active glow, passive dimming, and clipboard copy interaction.
+- [x] Traffic-scaled host sizes, mass-based physics, label-aware collision
+      avoidance, drag/friction, and camera zoom with fit-to-view.
+- [x] Active glow, passive dimming, clipboard copy, and server-edge highlighting.
 
 ### 6) Integration, run, and validation
 - [x] Wire capture → state → WebSocket broadcast → frontend.
@@ -199,7 +213,7 @@ frontend, and integration steps below are complete.
 
 ## Open Issues / Future Work
 
-- [ ] Add automated tests for capture parsing, graph aggregation, and hub
+- [x] Add automated tests for capture parsing, graph aggregation, and hub
       behaviour.
 - [ ] Support VLAN/MPLS and improve IPv6 handling.
 - [ ] Rate-limit or aggregate events on very busy interfaces to control visual
@@ -207,4 +221,4 @@ frontend, and integration steps below are complete.
 - [ ] Rate-limit/cache whois lookups more aggressively and add a bounded lookup
       worker pool for very large host sets.
 - [ ] Persist or replay capture sessions (pcap export/import).
-- [ ] Throttle/zoom controls for very large graphs beyond fit-to-viewport.
+- [ ] Throttle controls for very busy graphs.

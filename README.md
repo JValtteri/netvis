@@ -6,10 +6,12 @@ streams updates to a browser-based 2D canvas over WebSockets.
 
 - Hosts are drawn as blobs labelled with their IP address and a display name:
   reverse-DNS hostname for local hosts, whois organization name for external
-  hosts (when available).
+  hosts, falling back to reverse DNS when no organization is available.
 - Each unique source → destination IP pair becomes an edge.
 - Every captured packet is animated as a particle travelling along its edge; the
-  colour encodes the protocol and the size encodes the packet size.
+  colour encodes the protocol and the size encodes the packet size. Traffic
+  between the NetVis server itself and other hosts is shown as a thin glowing
+  yellow edge instead of individual particles.
 
 ## Requirements
 
@@ -114,13 +116,19 @@ re-apply `setcap` after each build.
   - Glowing: host that sent a packet within the recent activity window
 - **Blob size** scales with traffic volume: the busiest host is the largest and
   the least busy the smallest.
-- **Edges** connect IP pairs; particles travel source → destination.
+- **Edges** connect IP pairs; particles travel source → destination. Edges that
+  touch the NetVis server's own addresses are drawn as a thin glowing yellow line
+  and never animate packets.
 - **Dragging** a blob repositions it; connected hosts pull toward each other via a
-  force layout. Soft repulsion accounts for label sizes (and scales with label
-  content) to keep IP addresses and hostnames separated. Long IPv6 addresses are
-  truncated on screen but copied in full.
+  force layout. Velocity is damped with drag so blobs settle instead of creeping.
+  Soft repulsion accounts for label sizes (and scales with label content) with
+  extra vertical spacing to keep IP addresses and hostnames separated. Long IPv6
+  addresses are truncated on screen but copied in full.
 - **Clicking** a host (blob or label) copies its IP address to the clipboard and
   shows a short confirmation toast.
+- **Zooming** — use the `+`/`−` buttons in the bottom-right corner, the mouse wheel
+  (zooms toward the cursor), or pinch on a touch device. The frame button fits all
+  hosts and labels into view. One finger still drags hosts on touch devices.
 
 ### Legend
 
@@ -168,9 +176,11 @@ DESIGN.md            Design document and implementation notes
    emits normalized events: `{ts, srcIP, dstIP, proto, bytes}`.
 2. `graph` records hosts and edges keyed by `srcIP->dstIP`, accumulating packet
    counts and byte totals. Display names are resolved asynchronously: reverse DNS
-   for local/private addresses, and a whois organization lookup (via IANA
-   referral to the responsible RIR) for external addresses. Resolved names are
-   streamed to clients as `host` messages.
+   (with a 3 s timeout) for local/private addresses, and a whois organization
+   lookup (via IANA referral to the responsible RIR) for external addresses,
+   falling back to reverse DNS when whois has no organization. Resolved names are
+   streamed to clients as `host` messages and filled into the label when they
+   arrive.
 3. `server` broadcasts each event to connected WebSocket clients and sends a
    full snapshot when a client connects.
 4. The frontend renders the snapshot, then applies live packet events, animating
@@ -188,7 +198,6 @@ listed above (the runtime library alone is not enough).
 BPF filter, and confirm the browser is connected (browser dev-tools WebSocket).
 Loopback traffic may need `-iface lo`.
 
-**Reverse DNS / whois is slow or empty** — lookups run asynchronously with
-timeouts; local hosts fall back to an empty hostname and external hosts to an
-empty organization label when no answer is available. Whois requires outbound
-TCP port 43.
+**Reverse DNS / whois is slow or empty** — lookups run asynchronously with a 3 s
+reverse-DNS timeout; when no answer is available the label stays empty. Whois
+requires outbound TCP port 43.

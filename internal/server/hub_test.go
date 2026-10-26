@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 	"testing"
 	"time"
 
@@ -49,6 +50,21 @@ func TestHubSendsSnapshotOnRegister(t *testing.T) {
 	}
 	if len(snap.Hosts) != 0 || len(snap.Edges) != 0 {
 		t.Errorf("empty graph snapshot should have no hosts/edges, got %+v", snap)
+	}
+	if len(snap.ServerIPs) == 0 {
+		t.Error("snapshot should include the server's local addresses")
+	}
+}
+
+func TestDetectServerIPs(t *testing.T) {
+	ips := detectServerIPs()
+	if len(ips) == 0 {
+		t.Fatal("expected at least one local interface address")
+	}
+	for _, ip := range ips {
+		if net.ParseIP(ip) == nil {
+			t.Errorf("detectServerIPs returned invalid address %q", ip)
+		}
 	}
 }
 

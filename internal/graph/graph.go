@@ -147,7 +147,12 @@ func resolveName(ip string) string {
 	if parsed != nil && isLocalIP(parsed) {
 		return lookupHostname(ip)
 	}
-	return lookupWhoisOrg(ip)
+	// External hosts prefer the whois organization, with reverse DNS as a
+	// fallback when no organization is available.
+	if org := lookupWhoisOrg(ip); org != "" {
+		return org
+	}
+	return lookupHostname(ip)
 }
 
 func isLocalIP(ip net.IP) bool {
@@ -172,7 +177,7 @@ func lookupHostname(ip string) string {
 	select {
 	case h := <-done:
 		return h
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(3 * time.Second):
 		return ""
 	}
 }
@@ -180,6 +185,9 @@ func lookupHostname(ip string) string {
 type Snapshot struct {
 	Hosts []Host `json:"hosts"`
 	Edges []Edge `json:"edges"`
+	// ServerIPs lists the local addresses of the NetVis server. Clients use
+	// these to render traffic to/from the server itself differently.
+	ServerIPs []string `json:"serverIPs"`
 }
 
 func (g *Graph) Snapshot() Snapshot {

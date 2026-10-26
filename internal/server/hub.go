@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 	"sync"
 
 	"netvis/internal/capture"
@@ -14,6 +15,7 @@ type Hub struct {
 	register   chan *Client
 	unregister chan *Client
 	g          *graph.Graph
+	serverIPs  []string
 	mu         sync.RWMutex
 }
 
@@ -24,7 +26,40 @@ func NewHub(g *graph.Graph) *Hub {
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 		g:          g,
+		serverIPs:  detectServerIPs(),
 	}
+}
+
+// detectServerIPs returns the addresses assigned to this machine, across all
+// interfaces. Traffic between these addresses and other hosts is local to the
+// NetVis server itself.
+func detectServerIPs() []string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	ips := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip == nil {
+			continue
+		}
+		s := ip.String()
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		ips = append(ips, s)
+	}
+	return ips
 }
 
 func (h *Hub) Run() {
@@ -36,6 +71,7 @@ func (h *Hub) Run() {
 			h.mu.Unlock()
 			// send snapshot
 			snap := h.g.Snapshot()
+			snap.ServerIPs = h.serverIPs
 			if b, err := json.Marshal(map[string]interface{}{
 				"type": "snapshot",
 				"data": snap,
