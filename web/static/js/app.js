@@ -329,7 +329,22 @@ const hosts = new Map();
 const edges = new Map();
 const particles = [];
 const serverIPs = new Set();
-let webPort = 0;
+
+// Detect the web port from the current page location (no hardcoding).
+function getWebPort() {
+    if (window.location.port) {
+        const p = parseInt(window.location.port, 10);
+        if (!isNaN(p) && p > 0) {
+            return p;
+        }
+    }
+    if (window.location.protocol === 'https:') {
+        return 443;
+    }
+    return 80;
+}
+
+let webPort = getWebPort();
 
 // Only TCP connections to/from the NetVis frontend (HTTP/WebSocket) on the
 // web port are treated as frontend traffic - drawn as a glowing edge with
@@ -596,10 +611,19 @@ ws.onmessage = (event) => {
                 serverIPs.add(ip);
             }
         }
-        if (typeof data.webPort === 'number') {
+        // Prefer server-reported port if available, otherwise fall back to
+        // browser location (works for custom ports).
+        if (typeof data.webPort === 'number' && data.webPort > 0) {
             webPort = data.webPort;
         } else if (data.webPort) {
-            webPort = parseInt(data.webPort);
+            const p = parseInt(data.webPort);
+            if (!isNaN(p) && p > 0) {
+                webPort = p;
+            } else if (webPort === 0 || webPort === 80 || webPort === 443) {
+                webPort = getWebPort();
+            }
+        } else {
+            webPort = getWebPort();
         }
         if (data.hosts) {
             for (const h of data.hosts) {
