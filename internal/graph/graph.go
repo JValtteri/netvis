@@ -80,7 +80,7 @@ func (g *Graph) lookupHostname(ip string) string {
 	go func() {
 		names, err := net.LookupAddr(ip)
 		if err != nil || len(names) == 0 {
-			done <- ip
+			done <- ""
 			return
 		}
 		h := strings.TrimSuffix(names[0], ".")
@@ -95,9 +95,9 @@ func (g *Graph) lookupHostname(ip string) string {
 		return h
 	case <-time.After(200 * time.Millisecond):
 		g.dnsMu.Lock()
-		g.dnsCache[ip] = ip
+		g.dnsCache[ip] = ""
 		g.dnsMu.Unlock()
-		return ip
+		return ""
 	}
 }
 

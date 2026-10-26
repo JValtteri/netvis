@@ -17,6 +17,45 @@
             <span class="legend-item"><span class="color" style="background:#e74c3c"></span> OTHER</span>
         </div>
     </div>
+    <div id="menu">
+        <button id="menuToggle" aria-label="Toggle settings">&#9776;</button>
+        <div id="menuPanel" class="hidden">
+            <h2>Settings</h2>
+
+            <label class="slider-row" for="attractLocalLocal">
+                <span>Attraction local&harr;local <output id="attractLocalLocalValue"></output></span>
+                <input type="range" id="attractLocalLocal" min="0" max="0.03" step="0.001" value="0.012">
+            </label>
+            <label class="slider-row" for="attractLocalExternal">
+                <span>Attraction local&harr;external <output id="attractLocalExternalValue"></output></span>
+                <input type="range" id="attractLocalExternal" min="0" max="0.03" step="0.001" value="0.005">
+            </label>
+            <label class="slider-row" for="attractExternalExternal">
+                <span>Attraction external&harr;external <output id="attractExternalExternalValue"></output></span>
+                <input type="range" id="attractExternalExternal" min="0" max="0.03" step="0.001" value="0.002">
+            </label>
+
+            <label class="slider-row" for="packetSpeed">
+                <span>Packet speed <output id="packetSpeedValue"></output></span>
+                <input type="range" id="packetSpeed" min="0.001" max="0.05" step="0.001" value="0.01">
+            </label>
+            <label class="slider-row" for="packetSize">
+                <span>Packet size <output id="packetSizeValue"></output></span>
+                <input type="range" id="packetSize" min="0.1" max="3" step="0.1" value="1">
+            </label>
+
+            <label class="slider-row" for="minHostSize">
+                <span>Min host size <output id="minHostSizeValue"></output></span>
+                <input type="range" id="minHostSize" min="4" max="60" step="1" value="11">
+            </label>
+            <label class="slider-row" for="maxHostSize">
+                <span>Max host size <output id="maxHostSizeValue"></output></span>
+                <input type="range" id="maxHostSize" min="10" max="120" step="1" value="44">
+            </label>
+
+            <button id="removeGray">Remove gray hosts</button>
+        </div>
+    </div>
     <canvas id="canvas"></canvas>
     <script src="js/app.js"></script>
 </body>

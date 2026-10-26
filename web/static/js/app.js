@@ -81,6 +81,65 @@ const protocolColors = {
     OTHER: '#e74c3c'
 };
 
+const settings = {
+    attractLocalLocal: 0.012,
+    attractLocalExternal: 0.005,
+    attractExternalExternal: 0.002,
+    packetSpeed: 0.01,
+    packetSizeScale: 1,
+    minHostSize: 11,
+    maxHostSize: 44
+};
+
+function bindSlider(id, key, format, onChange) {
+    const input = document.getElementById(id);
+    const output = document.getElementById(id + 'Value');
+    const update = () => {
+        const value = parseFloat(input.value);
+        settings[key] = value;
+        if (output) output.textContent = format(value);
+        if (onChange) onChange();
+    };
+    input.addEventListener('input', update);
+    update();
+}
+
+bindSlider('attractLocalLocal', 'attractLocalLocal', (v) => v.toFixed(3));
+bindSlider('attractLocalExternal', 'attractLocalExternal', (v) => v.toFixed(3));
+bindSlider('attractExternalExternal', 'attractExternalExternal', (v) => v.toFixed(3));
+bindSlider('packetSpeed', 'packetSpeed', (v) => v.toFixed(3));
+bindSlider('packetSize', 'packetSizeScale', (v) => v.toFixed(1));
+bindSlider('minHostSize', 'minHostSize', (v) => v.toFixed(0), () => updateHostSizes());
+bindSlider('maxHostSize', 'maxHostSize', (v) => v.toFixed(0), () => updateHostSizes());
+
+document.getElementById('menuToggle').addEventListener('click', () => {
+    document.getElementById('menuPanel').classList.toggle('hidden');
+});
+
+document.getElementById('removeGray').addEventListener('click', removeGrayHosts);
+
+function removeGrayHosts() {
+    const removed = [];
+    for (const [ip, host] of hosts) {
+        if (!(host.sentCount > 0)) {
+            removed.push(ip);
+        }
+    }
+    for (const ip of removed) {
+        hosts.delete(ip);
+    }
+    for (const [key, edge] of edges) {
+        if (!hosts.has(edge.srcIP) || !hosts.has(edge.dstIP)) {
+            edges.delete(key);
+        }
+    }
+    if (draggedHost && removed.includes(draggedHost.ip)) {
+        draggedHost = null;
+    }
+    updateHostSizes();
+    updateStats();
+}
+
 function isLocalIP(ip) {
     if (!ip) return false;
     // IPv4 private/local ranges
@@ -119,24 +178,23 @@ function updateHostSizes() {
         if (t > maxTraffic) maxTraffic = t;
         if (t < minTraffic) minTraffic = t;
     }
+    const minRadius = Math.min(settings.minHostSize, settings.maxHostSize);
+    const maxRadius = Math.max(settings.minHostSize, settings.maxHostSize);
     if (maxTraffic === 0) {
         for (const host of hostArray) {
-            host.radius = 22;
+            host.radius = (minRadius + maxRadius) / 2;
         }
         return;
     }
-    const baseRadius = 22;
     for (const host of hostArray) {
         const t = getHostTraffic(host.ip);
-        if (t === maxTraffic && t === minTraffic) {
-            host.radius = baseRadius * 2;
-        } else if (t === maxTraffic) {
-            host.radius = baseRadius * 2;
+        if (t === maxTraffic) {
+            host.radius = maxRadius;
         } else if (t === minTraffic) {
-            host.radius = baseRadius * 0.5;
+            host.radius = minRadius;
         } else {
             const ratio = (t - minTraffic) / (maxTraffic - minTraffic);
-            host.radius = baseRadius * 0.5 + ratio * (baseRadius * 2 - baseRadius * 0.5);
+            host.radius = minRadius + ratio * (maxRadius - minRadius);
         }
     }
 }
@@ -145,7 +203,7 @@ function getHostPosition(ip) {
     if (!hosts.has(ip)) {
         hosts.set(ip, {
             ip: ip,
-            hostname: ip,
+            hostname: '',
             x: Math.random() * canvas.width,
             y: Math.random() * canvas.height,
             vx: (Math.random() - 0.5) * 0.3,
@@ -235,8 +293,8 @@ ws.onmessage = (event) => {
             tx: dst.x,
             ty: dst.y,
             progress: 0,
-            speed: 0.01,
-            size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)),
+            speed: settings.packetSpeed,
+            size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)) * settings.packetSizeScale,
             color: protocolColors[ev.proto] || protocolColors.OTHER,
             life: 1.0
         });
@@ -293,11 +351,11 @@ function animate() {
         const dstLocal = isLocalIP(dst.ip);
         let strength;
         if (srcLocal && dstLocal) {
-            strength = 0.012;
+            strength = settings.attractLocalLocal;
         } else if (srcLocal || dstLocal) {
-            strength = 0.005;
+            strength = settings.attractLocalExternal;
         } else {
-            strength = 0.002;
+            strength = settings.attractExternalExternal;
         }
         
         const dx = dst.x - src.x;
@@ -422,23 +480,28 @@ function animate() {
         ctx.lineWidth = 2;
         ctx.stroke();
         
-        // Label with collision avoidance - draw text with background
+        // Labels: IP above the blob, hostname below (empty if unavailable)
         ctx.textAlign = 'center';
-        const label = host.hostname && host.hostname.length > 16 ? host.hostname.substring(0, 13) + '...' : (host.hostname || host.ip);
         ctx.font = '11px monospace';
         
-        // Draw text background for better readability
-        const labelY = host.y - host.radius - 6;
-        const ipY = host.y + host.radius + 16;
+        const ipY = host.y - host.radius - 6;
+        const hostnameY = host.y + host.radius + 16;
+        
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-        const labelWidth = ctx.measureText(label).width;
         const ipWidth = ctx.measureText(host.ip).width;
-        ctx.fillRect(host.x - labelWidth / 2 - 2, labelY - 10, labelWidth + 4, 12);
         ctx.fillRect(host.x - ipWidth / 2 - 2, ipY - 10, ipWidth + 4, 12);
         
         ctx.fillStyle = hasSent ? '#fff' : '#aaa';
-        ctx.fillText(label, host.x, labelY);
         ctx.fillText(host.ip, host.x, ipY);
+        
+        if (host.hostname) {
+            const hostname = host.hostname.length > 16 ? host.hostname.substring(0, 13) + '...' : host.hostname;
+            const hostnameWidth = ctx.measureText(hostname).width;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(host.x - hostnameWidth / 2 - 2, hostnameY - 10, hostnameWidth + 4, 12);
+            ctx.fillStyle = hasSent ? '#fff' : '#aaa';
+            ctx.fillText(hostname, host.x, hostnameY);
+        }
     }
     
     requestAnimationFrame(animate);
