@@ -74,3 +74,16 @@ func (h *Hub) BroadcastEvent(ev capture.Event) {
 	}
 	h.broadcast <- b
 }
+
+// BroadcastHost sends an updated host (e.g. after its hostname or whois
+// organization has been resolved) to every connected client.
+func (h *Hub) BroadcastHost(host graph.Host) {
+	b, err := json.Marshal(map[string]interface{}{
+		"type": "host",
+		"data": host,
+	})
+	if err != nil {
+		return
+	}
+	h.broadcast <- b
+}

@@ -16,7 +16,7 @@ packets.
 | --- | --- | --- |
 | CLI | `cmd/netvis/` | Parse flags (`-iface`, `-filter`, `-addr`), start capture and HTTP server, handle shutdown. |
 | Capture | `internal/capture/` | Open an interface via libpcap (cgo + gopacket), apply BPF filters, parse L3/L4, emit normalized events. |
-| Graph | `internal/graph/` | Thread-safe host/edge store, traffic counters, reverse-DNS cache, snapshots. |
+| Graph | `internal/graph/` | Thread-safe host/edge store, traffic counters, async display-name resolution (reverse DNS for local hosts, whois organization for external hosts), snapshots. |
 | Server | `internal/server/` | Static file serving, WebSocket upgrade, hub broadcast, client ping/pong. |
 | Frontend | `web/static/` | Canvas renderer, force layout, interactions, settings UI. |
 
@@ -41,16 +41,27 @@ Each captured packet becomes an event:
 }
 ```
 
-WebSocket messages are wrapped as `{"type": "packet", "data": <event>}` or
-`{"type": "snapshot", "data": {"hosts": [...], "edges": [...]}}`.
+WebSocket messages are wrapped as:
+
+- `{"type": "packet", "data": <event>}`
+- `{"type": "snapshot", "data": {"hosts": [...], "edges": [...]}}`
+- `{"type": "host", "data": <host>}` — sent when a host's display name is resolved
+  asynchronously.
 
 ## Visualization
 
 ### Hosts
 
 - Each observed host is a blob identified by IP (no duplicates) and displayed
-  with its IP; the hostname is shown only when reverse DNS resolves (otherwise the
-  hostname label is left empty).
+  with its IP.
+- Display name resolution is asynchronous and cached:
+  - **Local/private hosts** use reverse DNS for a hostname.
+  - **External hosts** use a whois lookup: query `whois.iana.org` for the
+    authoritative RIR server, then query that server and extract the
+    organization (`org-name`, `OrgName`, `organization`, `owner`, `descr`, or
+    `netname`).
+  - If no name is available the label is left empty. Resolution results are
+    pushed to clients as `host` messages.
 - Colour coding:
   - **Green** — local/private-network host.
   - **Blue** — remote/external host.
@@ -143,8 +154,9 @@ frontend, and integration steps below are complete.
 - [x] Emit normalized `{ts, srcIP, dstIP, proto, bytes}` events.
 
 ### 3) Graph/state model
-- [x] Track hosts by IP with best-effort reverse DNS (cached, short timeout,
-      empty on failure).
+- [x] Track hosts by IP with async, cached display-name resolution: reverse DNS
+      for local hosts and whois organization for external hosts (timeouts, empty
+      on failure, pushed to clients via `host` messages).
 - [x] Track edges keyed by `srcIP->dstIP` with packet/byte totals.
 - [x] Thread-safe access via `sync.RWMutex` for capture-fed state.
 - [x] In-memory retained hosts/edges with client snapshots.
@@ -185,6 +197,7 @@ frontend, and integration steps below are complete.
 - [ ] Support VLAN/MPLS and improve IPv6 handling.
 - [ ] Rate-limit or aggregate events on very busy interfaces to control visual
       noise and CPU load.
-- [ ] Move reverse-DNS lookups fully off the graph lock / add a lookup worker.
+- [ ] Rate-limit/cache whois lookups more aggressively and add a bounded lookup
+      worker pool for very large host sets.
 - [ ] Persist or replay capture sessions (pcap export/import).
 - [ ] Throttle/zoom controls for very large graphs beyond fit-to-viewport.

@@ -4,8 +4,9 @@ A live, graphical representation of network traffic. NetVis captures packets fro
 network interface with libpcap, aggregates them into a host/connection graph, and
 streams updates to a browser-based 2D canvas over WebSockets.
 
-- Hosts are drawn as blobs labelled with their IP address (and hostname when
-  reverse DNS resolves).
+- Hosts are drawn as blobs labelled with their IP address and a display name:
+  reverse-DNS hostname for local hosts, whois organization name for external
+  hosts (when available).
 - Each unique source → destination IP pair becomes an edge.
 - Every captured packet is animated as a particle travelling along its edge; the
   colour encodes the protocol and the size encodes the packet size.
@@ -151,8 +152,11 @@ DESIGN.md            Design document and implementation notes
 
 1. `capture` opens the interface with libpcap, applies an optional BPF filter and
    emits normalized events: `{ts, srcIP, dstIP, proto, bytes}`.
-2. `graph` records hosts (IP + best-effort hostname) and edges keyed by
-   `srcIP->dstIP`, accumulating packet counts and byte totals.
+2. `graph` records hosts and edges keyed by `srcIP->dstIP`, accumulating packet
+   counts and byte totals. Display names are resolved asynchronously: reverse DNS
+   for local/private addresses, and a whois organization lookup (via IANA
+   referral to the responsible RIR) for external addresses. Resolved names are
+   streamed to clients as `host` messages.
 3. `server` broadcasts each event to connected WebSocket clients and sends a
    full snapshot when a client connects.
 4. The frontend renders the snapshot, then applies live packet events, animating
@@ -170,5 +174,7 @@ listed above (the runtime library alone is not enough).
 BPF filter, and confirm the browser is connected (browser dev-tools WebSocket).
 Loopback traffic may need `-iface lo`.
 
-**Reverse DNS is slow** — lookups are best-effort with a short timeout; hosts
-without a resolvable name are shown with an empty hostname.
+**Reverse DNS / whois is slow or empty** — lookups run asynchronously with
+timeouts; local hosts fall back to an empty hostname and external hosts to an
+empty organization label when no answer is available. Whois requires outbound
+TCP port 43.

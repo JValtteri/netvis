@@ -22,19 +22,31 @@ type Edge struct {
 }
 
 type Graph struct {
-	mu        sync.RWMutex
-	hosts     map[string]*Host
-	edges     map[string]*Edge
-	dnsCache  map[string]string
-	dnsMu     sync.RWMutex
+	mu     sync.RWMutex
+	hosts  map[string]*Host
+	edges  map[string]*Edge
+	onHost func(Host)
+
+	lookupMu  sync.Mutex
+	nameCache map[string]string
+	pending   map[string]bool
 }
 
 func New() *Graph {
 	return &Graph{
-		hosts:    make(map[string]*Host),
-		edges:    make(map[string]*Edge),
-		dnsCache: make(map[string]string),
+		hosts:     make(map[string]*Host),
+		edges:     make(map[string]*Edge),
+		nameCache: make(map[string]string),
+		pending:   make(map[string]bool),
 	}
+}
+
+// SetHostUpdateHandler registers a callback invoked when a host's display name
+// (hostname or whois organization) has been resolved asynchronously.
+func (g *Graph) SetHostUpdateHandler(fn func(Host)) {
+	g.mu.Lock()
+	g.onHost = fn
+	g.mu.Unlock()
 }
 
 func (g *Graph) edgeKey(src, dst string) string {
@@ -42,15 +54,17 @@ func (g *Graph) edgeKey(src, dst string) string {
 }
 
 func (g *Graph) Apply(ev capture.Event) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	var newHosts []string
 
+	g.mu.Lock()
 	// Ensure hosts exist
 	if _, ok := g.hosts[ev.SrcIP]; !ok {
-		g.hosts[ev.SrcIP] = &Host{IP: ev.SrcIP, Hostname: g.lookupHostname(ev.SrcIP)}
+		g.hosts[ev.SrcIP] = &Host{IP: ev.SrcIP, Hostname: g.cachedName(ev.SrcIP)}
+		newHosts = append(newHosts, ev.SrcIP)
 	}
 	if _, ok := g.hosts[ev.DstIP]; !ok {
-		g.hosts[ev.DstIP] = &Host{IP: ev.DstIP, Hostname: g.lookupHostname(ev.DstIP)}
+		g.hosts[ev.DstIP] = &Host{IP: ev.DstIP, Hostname: g.cachedName(ev.DstIP)}
+		newHosts = append(newHosts, ev.DstIP)
 	}
 
 	k := g.edgeKey(ev.SrcIP, ev.DstIP)
@@ -65,17 +79,80 @@ func (g *Graph) Apply(ev capture.Event) {
 			Bytes: int64(ev.Bytes),
 		}
 	}
+	g.mu.Unlock()
+
+	for _, ip := range newHosts {
+		g.scheduleLookup(ip)
+	}
 }
 
-func (g *Graph) lookupHostname(ip string) string {
-	g.dnsMu.RLock()
-	if h, ok := g.dnsCache[ip]; ok {
-		g.dnsMu.RUnlock()
-		return h
-	}
-	g.dnsMu.RUnlock()
+func (g *Graph) cachedName(ip string) string {
+	g.lookupMu.Lock()
+	defer g.lookupMu.Unlock()
+	return g.nameCache[ip]
+}
 
-	// Best effort async-like lookup with timeout
+// scheduleLookup resolves a display name for the host without blocking packet
+// processing. Local hosts use reverse DNS; external hosts use a whois
+// organization lookup.
+func (g *Graph) scheduleLookup(ip string) {
+	g.lookupMu.Lock()
+	if _, ok := g.nameCache[ip]; ok {
+		g.lookupMu.Unlock()
+		return
+	}
+	if g.pending[ip] {
+		g.lookupMu.Unlock()
+		return
+	}
+	g.pending[ip] = true
+	g.lookupMu.Unlock()
+
+	go func() {
+		name := resolveName(ip)
+
+		g.lookupMu.Lock()
+		g.nameCache[ip] = name
+		delete(g.pending, ip)
+		g.lookupMu.Unlock()
+
+		var (
+			updated Host
+			found   bool
+			cb      func(Host)
+		)
+		g.mu.Lock()
+		if h, ok := g.hosts[ip]; ok {
+			h.Hostname = name
+			updated = *h
+			found = true
+			cb = g.onHost
+		}
+		g.mu.Unlock()
+
+		if found && cb != nil {
+			cb(updated)
+		}
+	}()
+}
+
+func resolveName(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed != nil && isLocalIP(parsed) {
+		return lookupHostname(ip)
+	}
+	return lookupWhoisOrg(ip)
+}
+
+func isLocalIP(ip net.IP) bool {
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsUnspecified()
+}
+
+func lookupHostname(ip string) string {
 	done := make(chan string, 1)
 	go func() {
 		names, err := net.LookupAddr(ip)
@@ -83,20 +160,13 @@ func (g *Graph) lookupHostname(ip string) string {
 			done <- ""
 			return
 		}
-		h := strings.TrimSuffix(names[0], ".")
-		g.dnsMu.Lock()
-		g.dnsCache[ip] = h
-		g.dnsMu.Unlock()
-		done <- h
+		done <- strings.TrimSuffix(names[0], ".")
 	}()
 
 	select {
 	case h := <-done:
 		return h
-	case <-time.After(200 * time.Millisecond):
-		g.dnsMu.Lock()
-		g.dnsCache[ip] = ""
-		g.dnsMu.Unlock()
+	case <-time.After(500 * time.Millisecond):
 		return ""
 	}
 }

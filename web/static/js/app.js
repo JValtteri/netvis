@@ -358,6 +358,13 @@ ws.onmessage = (event) => {
         }
         updateHostSizes();
         updateStats();
+    } else if (msg.type === 'host') {
+        const info = msg.data;
+        const host = hosts.get(info.ip);
+        if (host) {
+            host.hostname = info.hostname;
+        }
+        updateStats();
     } else if (msg.type === 'packet') {
         const ev = msg.data;
         const srcHost = getHostPosition(ev.srcIP);
