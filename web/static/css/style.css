@@ -25,10 +25,39 @@ body {
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+#infoHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
 #info h1 {
     font-size: 18px;
     margin-bottom: 8px;
     color: #4a90e2;
+}
+
+#legendToggle {
+    width: 22px;
+    height: 22px;
+    margin-bottom: 8px;
+    font-size: 14px;
+    line-height: 1;
+    color: #ccc;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#legendToggle:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+#info.collapsed h1,
+#info.collapsed .legend-group {
+    display: none;
 }
 
 #stats {

@@ -8,7 +8,10 @@
 </head>
 <body>
     <div id="info">
-        <h1>NetVis</h1>
+        <div id="infoHeader">
+            <h1>NetVis</h1>
+            <button id="legendToggle" aria-label="Toggle legend" title="Toggle legend">&minus;</button>
+        </div>
         <div id="stats">Hosts: <span id="hostCount">0</span> | Connections: <span id="edgeCount">0</span></div>
         <div class="legend-group">
             <div class="legend-title">Hosts</div>
@@ -35,15 +38,15 @@
 
             <label class="slider-row" for="attractLocalLocal">
                 <span>Attraction local&harr;local <output id="attractLocalLocalValue"></output></span>
-                <input type="range" id="attractLocalLocal" min="0" max="0.1" step="0.001" value="0.030">
+                <input type="range" id="attractLocalLocal" min="0" max="1" step="0.001" value="0.100">
             </label>
             <label class="slider-row" for="attractLocalExternal">
                 <span>Attraction local&harr;external <output id="attractLocalExternalValue"></output></span>
-                <input type="range" id="attractLocalExternal" min="0" max="0.1" step="0.001" value="0.020">
+                <input type="range" id="attractLocalExternal" min="0" max="1" step="0.001" value="0.660">
             </label>
             <label class="slider-row" for="attractExternalExternal">
                 <span>Attraction external&harr;external <output id="attractExternalExternalValue"></output></span>
-                <input type="range" id="attractExternalExternal" min="0" max="0.1" step="0.001" value="0.020">
+                <input type="range" id="attractExternalExternal" min="0" max="1" step="0.001" value="0.020">
             </label>
 
             <label class="slider-row" for="packetSpeed">

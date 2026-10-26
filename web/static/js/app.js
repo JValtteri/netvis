@@ -17,37 +17,86 @@ function getMousePos(e) {
     };
 }
 
-canvas.addEventListener('mousedown', (e) => {
-    const pos = getMousePos(e);
+let pressedHost = null;
+let pressX = 0;
+let pressY = 0;
+let dragMoved = false;
+
+function hostAtPosition(pos) {
+    ctx.font = '11px monospace';
     for (const host of hosts.values()) {
         const dx = pos.x - host.x;
         const dy = pos.y - host.y;
         if (Math.sqrt(dx * dx + dy * dy) <= host.radius) {
-            draggedHost = host;
-            dragOffsetX = dx;
-            dragOffsetY = dy;
-            host.vx = 0;
-            host.vy = 0;
-            break;
+            return host;
         }
+        // IP label above the blob
+        const ipY = host.y - host.radius - 6;
+        const ipWidth = ctx.measureText(host.ip).width;
+        if (pos.x >= host.x - ipWidth / 2 - 2 && pos.x <= host.x + ipWidth / 2 + 2 &&
+            pos.y >= ipY - 10 && pos.y <= ipY + 2) {
+            return host;
+        }
+        // Hostname label below the blob
+        if (host.hostname) {
+            const hostnameY = host.y + host.radius + 16;
+            const hostnameWidth = ctx.measureText(host.hostname).width;
+            if (pos.x >= host.x - hostnameWidth / 2 - 2 && pos.x <= host.x + hostnameWidth / 2 + 2 &&
+                pos.y >= hostnameY - 10 && pos.y <= hostnameY + 2) {
+                return host;
+            }
+        }
+    }
+    return null;
+}
+
+function copyToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+    } else {
+        fallbackCopy(text);
+    }
+}
+
+function fallbackCopy(text) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+    } catch (err) {
+        // ignore
+    }
+    document.body.removeChild(textarea);
+}
+
+canvas.addEventListener('mousedown', (e) => {
+    const pos = getMousePos(e);
+    const host = hostAtPosition(pos);
+    if (host) {
+        draggedHost = host;
+        pressedHost = host;
+        dragMoved = false;
+        pressX = pos.x;
+        pressY = pos.y;
+        dragOffsetX = pos.x - host.x;
+        dragOffsetY = pos.y - host.y;
+        host.vx = 0;
+        host.vy = 0;
     }
 });
 
 canvas.addEventListener('mousemove', (e) => {
     const pos = getMousePos(e);
     if (!draggedHost) {
-        // Show grab cursor when hovering over a host
-        let hover = false;
-        for (const host of hosts.values()) {
-            const dx = pos.x - host.x;
-            const dy = pos.y - host.y;
-            if (Math.sqrt(dx * dx + dy * dy) <= host.radius) {
-                hover = true;
-                break;
-            }
-        }
-        canvas.style.cursor = hover ? 'grab' : 'default';
+        canvas.style.cursor = hostAtPosition(pos) ? 'grab' : 'default';
         return;
+    }
+    if (Math.sqrt((pos.x - pressX) ** 2 + (pos.y - pressY) ** 2) > 4) {
+        dragMoved = true;
     }
     canvas.style.cursor = 'grabbing';
     draggedHost.x = Math.max(draggedHost.radius, Math.min(canvas.width - draggedHost.radius, pos.x - dragOffsetX));
@@ -55,6 +104,11 @@ canvas.addEventListener('mousemove', (e) => {
 });
 
 window.addEventListener('mouseup', () => {
+    // Clicking (without dragging) a host copies its IP address
+    if (pressedHost && !dragMoved) {
+        copyToClipboard(pressedHost.ip);
+    }
+    pressedHost = null;
     draggedHost = null;
     canvas.style.cursor = 'default';
 });
@@ -82,8 +136,8 @@ const protocolColors = {
 };
 
 const settings = {
-    attractLocalLocal: 0.030,
-    attractLocalExternal: 0.020,
+    attractLocalLocal: 0.100,
+    attractLocalExternal: 0.660,
     attractExternalExternal: 0.020,
     packetSpeed: 0.005,
     packetSizeScale: 1,
@@ -114,6 +168,12 @@ bindSlider('maxHostSize', 'maxHostSize', (v) => v.toFixed(0), () => updateHostSi
 
 document.getElementById('menuToggle').addEventListener('click', () => {
     document.getElementById('menuPanel').classList.toggle('hidden');
+});
+
+document.getElementById('legendToggle').addEventListener('click', () => {
+    const info = document.getElementById('info');
+    const collapsed = info.classList.toggle('collapsed');
+    document.getElementById('legendToggle').innerHTML = collapsed ? '&plus;' : '&minus;';
 });
 
 document.getElementById('removeGray').addEventListener('click', removeGrayHosts);
@@ -285,13 +345,9 @@ ws.onmessage = (event) => {
         }
         
         // Create particle
-        const src = hosts.get(ev.srcIP);
-        const dst = hosts.get(ev.dstIP);
         particles.push({
-            x: src.x,
-            y: src.y,
-            tx: dst.x,
-            ty: dst.y,
+            srcIP: ev.srcIP,
+            dstIP: ev.dstIP,
             progress: 0,
             speed: settings.packetSpeed,
             size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)) * settings.packetSizeScale,
@@ -309,7 +365,7 @@ function updateStats() {
 }
 
 function animate() {
-    ctx.fillStyle = 'rgba(10, 10, 10, 0.15)';
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
     const hostArray = Array.from(hosts.values());
@@ -368,13 +424,15 @@ function animate() {
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         
+        // Mass is proportional to blob size: heavier hosts move less.
+        const totalMass = src.radius + dst.radius;
         if (src !== draggedHost) {
-            src.x += fx;
-            src.y += fy;
+            src.x += fx * (dst.radius / totalMass) * 2;
+            src.y += fy * (dst.radius / totalMass) * 2;
         }
         if (dst !== draggedHost) {
-            dst.x -= fx;
-            dst.y -= fy;
+            dst.x -= fx * (src.radius / totalMass) * 2;
+            dst.y -= fy * (src.radius / totalMass) * 2;
         }
     }
     
@@ -410,20 +468,22 @@ function animate() {
                 const force = (minDist - dist) / dist * 0.5;
                 const fx = dx * force;
                 const fy = dy * force;
+                // Mass is proportional to blob size: heavier hosts move less.
+                const totalMass = h1.radius + h2.radius;
                 if (h1 !== draggedHost) {
-                    h1.x -= fx;
-                    h1.y -= fy;
+                    h1.x -= fx * (h2.radius / totalMass) * 2;
+                    h1.y -= fy * (h2.radius / totalMass) * 2;
                 }
                 if (h2 !== draggedHost) {
-                    h2.x += fx;
-                    h2.y += fy;
+                    h2.x += fx * (h1.radius / totalMass) * 2;
+                    h2.y += fy * (h1.radius / totalMass) * 2;
                 }
             }
         }
     }
     
     // Draw edges
-    ctx.strokeStyle = 'rgba(100, 100, 100, 0.3)';
+    ctx.strokeStyle = 'rgba(55, 55, 55, 0.9)';
     ctx.lineWidth = 1;
     for (const edge of edges.values()) {
         const src = hosts.get(edge.srcIP);
@@ -446,8 +506,15 @@ function animate() {
             continue;
         }
         
-        const x = p.x + (p.tx - p.x) * p.progress;
-        const y = p.y + (p.ty - p.y) * p.progress;
+        // Follow the live host positions so packets don't miss moving hosts.
+        const src = hosts.get(p.srcIP);
+        const dst = hosts.get(p.dstIP);
+        if (!src || !dst) {
+            particles.splice(i, 1);
+            continue;
+        }
+        const x = src.x + (dst.x - src.x) * p.progress;
+        const y = src.y + (dst.y - src.y) * p.progress;
         
         ctx.beginPath();
         ctx.arc(x, y, p.size, 0, Math.PI * 2);
@@ -464,19 +531,28 @@ function animate() {
         const hasSent = (host.sentCount || 0) > 0;
         const local = isLocalIP(host.ip);
         // Blob color: green if local, gray if never sent, blue otherwise
+        let fillColor, strokeColor;
         if (!hasSent) {
-            ctx.fillStyle = 'rgba(100, 100, 100, 0.25)';
-            ctx.strokeStyle = '#666';
+            fillColor = 'rgba(100, 100, 100, 0.25)';
+            strokeColor = '#666';
         } else if (local) {
-            ctx.fillStyle = 'rgba(80, 200, 120, 0.35)';
-            ctx.strokeStyle = '#50c878';
+            fillColor = 'rgba(80, 200, 120, 0.35)';
+            strokeColor = '#50c878';
         } else {
-            ctx.fillStyle = 'rgba(74, 144, 226, 0.3)';
-            ctx.strokeStyle = '#4a90e2';
+            fillColor = 'rgba(74, 144, 226, 0.3)';
+            strokeColor = '#4a90e2';
         }
+        // Opaque backdrop so edges/particles never show through the blob
         ctx.beginPath();
         ctx.arc(host.x, host.y, host.radius, 0, Math.PI * 2);
+        ctx.fillStyle = '#000';
         ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(host.x, host.y, host.radius, 0, Math.PI * 2);
+        ctx.fillStyle = fillColor;
+        ctx.fill();
+        ctx.strokeStyle = strokeColor;
         ctx.lineWidth = 2;
         ctx.stroke();
         
