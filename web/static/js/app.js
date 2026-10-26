@@ -50,11 +50,29 @@ function hostAtPosition(pos) {
     return null;
 }
 
+let toastTimeout = null;
+
+function showToast(message) {
+    const toast = document.getElementById('toast');
+    toast.textContent = message;
+    toast.classList.add('show');
+    if (toastTimeout) {
+        clearTimeout(toastTimeout);
+    }
+    toastTimeout = setTimeout(() => {
+        toast.classList.remove('show');
+    }, 1800);
+}
+
 function copyToClipboard(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
+        navigator.clipboard.writeText(text).then(() => showToast(`Copied ${text}`)).catch(() => {
+            fallbackCopy(text);
+            showToast(`Copied ${text}`);
+        });
     } else {
         fallbackCopy(text);
+        showToast(`Copied ${text}`);
     }
 }
 
@@ -140,9 +158,11 @@ const settings = {
     attractLocalExternal: 0.660,
     attractExternalExternal: 0.020,
     packetSpeed: 0.005,
-    packetSizeScale: 1,
+    packetSizeScale: 0.3,
     minHostSize: 5,
-    maxHostSize: 44
+    maxHostSize: 44,
+    glowDuration: 60,
+    passiveTimeout: 120
 };
 
 function bindSlider(id, key, format, onChange) {
@@ -165,6 +185,8 @@ bindSlider('packetSpeed', 'packetSpeed', (v) => v.toFixed(3));
 bindSlider('packetSize', 'packetSizeScale', (v) => v.toFixed(1));
 bindSlider('minHostSize', 'minHostSize', (v) => v.toFixed(0), () => updateHostSizes());
 bindSlider('maxHostSize', 'maxHostSize', (v) => v.toFixed(0), () => updateHostSizes());
+bindSlider('glowDuration', 'glowDuration', (v) => v.toFixed(0));
+bindSlider('passiveTimeout', 'passiveTimeout', (v) => v.toFixed(0));
 
 document.getElementById('menuToggle').addEventListener('click', () => {
     document.getElementById('menuPanel').classList.toggle('hidden');
@@ -176,12 +198,19 @@ document.getElementById('legendToggle').addEventListener('click', () => {
     document.getElementById('legendToggle').innerHTML = collapsed ? '&plus;' : '&minus;';
 });
 
-document.getElementById('removeGray').addEventListener('click', removeGrayHosts);
+document.getElementById('removeSilent').addEventListener('click', () => {
+    removeHosts((host) => !(host.sentCount > 0));
+});
 
-function removeGrayHosts() {
+document.getElementById('removePassive').addEventListener('click', () => {
+    const now = Date.now();
+    removeHosts((host) => now - (host.lastActivityAt || now) > settings.passiveTimeout * 1000);
+});
+
+function removeHosts(predicate) {
     const removed = [];
     for (const [ip, host] of hosts) {
-        if (!(host.sentCount > 0)) {
+        if (predicate(host)) {
             removed.push(ip);
         }
     }
@@ -272,7 +301,9 @@ function getHostPosition(ip) {
             sentCount: 0,
             receivedCount: 0,
             bytesSent: 0,
-            bytesReceived: 0
+            bytesReceived: 0,
+            lastSentAt: 0,
+            lastActivityAt: Date.now()
         });
         updateHostSizes();
     }
@@ -300,7 +331,9 @@ ws.onmessage = (event) => {
                         sentCount: 0,
                         receivedCount: 0,
                         bytesSent: 0,
-                        bytesReceived: 0
+                        bytesReceived: 0,
+                        lastSentAt: 0,
+                        lastActivityAt: Date.now()
                     });
                 } else {
                     const host = hosts.get(h.ip);
@@ -329,10 +362,14 @@ ws.onmessage = (event) => {
         const ev = msg.data;
         const srcHost = getHostPosition(ev.srcIP);
         const dstHost = getHostPosition(ev.dstIP);
+        const now = Date.now();
         srcHost.sentCount = (srcHost.sentCount || 0) + 1;
         dstHost.receivedCount = (dstHost.receivedCount || 0) + 1;
         srcHost.bytesSent = (srcHost.bytesSent || 0) + ev.bytes;
         dstHost.bytesReceived = (dstHost.bytesReceived || 0) + ev.bytes;
+        srcHost.lastSentAt = now;
+        srcHost.lastActivityAt = now;
+        dstHost.lastActivityAt = now;
         updateHostSizes();
         
         const key = edgeKey(ev.srcIP, ev.dstIP);
@@ -548,6 +585,19 @@ function animate() {
         ctx.fillStyle = '#000';
         ctx.fill();
 
+        const now = Date.now();
+        const glowing = host.lastSentAt > 0 && now - host.lastSentAt < settings.glowDuration * 1000;
+        const passive = now - (host.lastActivityAt || now) > settings.passiveTimeout * 1000;
+
+        ctx.save();
+        if (passive) {
+            ctx.globalAlpha = 0.3;
+        }
+        if (glowing) {
+            ctx.shadowBlur = 18;
+            ctx.shadowColor = strokeColor;
+        }
+
         ctx.beginPath();
         ctx.arc(host.x, host.y, host.radius, 0, Math.PI * 2);
         ctx.fillStyle = fillColor;
@@ -555,6 +605,7 @@ function animate() {
         ctx.strokeStyle = strokeColor;
         ctx.lineWidth = 2;
         ctx.stroke();
+        ctx.restore();
         
         // Labels: IP above the blob, hostname below (empty if unavailable)
         ctx.textAlign = 'center';
