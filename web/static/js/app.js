@@ -32,7 +32,7 @@ function hostAtPosition(pos) {
         }
         // IP label above the blob
         const ipY = host.y - host.radius - 6;
-        const ipWidth = ctx.measureText(host.ip).width;
+        const ipWidth = ctx.measureText(displayIP(host)).width;
         if (pos.x >= host.x - ipWidth / 2 - 2 && pos.x <= host.x + ipWidth / 2 + 2 &&
             pos.y >= ipY - 10 && pos.y <= ipY + 2) {
             return host;
@@ -162,7 +162,7 @@ const settings = {
     packetSizeScale: 0.3,
     minHostSize: 5,
     maxHostSize: 44,
-    glowDuration: 60,
+    glowDuration: 10,
     passiveTimeout: 120,
     autoRemovePassive: false
 };
@@ -275,18 +275,32 @@ function displayHostname(host) {
     return host.hostname.length > 16 ? host.hostname.substring(0, 13) + '...' : host.hostname;
 }
 
+// Long IPv6 addresses are truncated for display; the full address is still
+// used when copying to the clipboard.
+function displayIP(host) {
+    const ip = host.ip;
+    if (ip.indexOf(':') !== -1 && ip.length > 18) {
+        return ip.substring(0, 15) + '...';
+    }
+    return ip;
+}
+
 // Bounds of the blob plus its IP/hostname labels, relative to the blob center.
-// Used to keep labels from overlapping other hosts and labels.
+// The label collision area grows with the rendered label content.
 function hostLabelBounds(host) {
     ctx.font = '11px monospace';
-    const ipHalf = ctx.measureText(host.ip).width / 2 + 2;
+    const ipWidth = ctx.measureText(displayIP(host)).width + 4;
     const hostname = displayHostname(host);
-    const hostnameHalf = hostname ? ctx.measureText(hostname).width / 2 + 2 : 0;
-    const margin = 8;
+    const hostnameWidth = hostname ? ctx.measureText(hostname).width + 4 : 0;
+
+    const labelWidth = Math.max(ipWidth, hostnameWidth);
+    const width = Math.max(host.radius * 2, labelWidth);
+    const padding = Math.max(4, labelWidth * 0.1);
+
     return {
-        halfWidth: Math.max(host.radius, ipHalf, hostnameHalf) + margin,
-        top: host.radius + 16 + margin,
-        bottom: host.radius + 18 + margin
+        halfWidth: width / 2 + padding,
+        top: host.radius + 16 + padding * 0.5,
+        bottom: host.radius + 18 + padding * 0.5
     };
 }
 
@@ -342,7 +356,8 @@ function getHostPosition(ip) {
             bytesSent: 0,
             bytesReceived: 0,
             lastSentAt: 0,
-            lastActivityAt: Date.now()
+            lastActivityAt: Date.now(),
+            glowLevel: 0
         });
         updateHostSizes();
     }
@@ -372,7 +387,8 @@ ws.onmessage = (event) => {
                         bytesSent: 0,
                         bytesReceived: 0,
                         lastSentAt: 0,
-                        lastActivityAt: Date.now()
+                        lastActivityAt: Date.now(),
+                        glowLevel: 0
                     });
                 } else {
                     const host = hosts.get(h.ip);
@@ -447,7 +463,13 @@ function updateStats() {
     edgeCountEl.textContent = edges.size;
 }
 
+let lastFrameTime = performance.now();
+
 function animate() {
+    const frameTime = performance.now();
+    const dt = Math.min((frameTime - lastFrameTime) / 1000, 0.1);
+    lastFrameTime = frameTime;
+
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     
@@ -538,8 +560,8 @@ function animate() {
         host.y = Math.max(host.radius + 80, Math.min(canvas.height - host.radius - 80, host.y));
     }
     
-    // Collision avoidance including labels: keep the blob+label bounding boxes
-    // of every pair of hosts separated so IPs and hostnames never overlap.
+    // Soft label-aware repulsion: push apart blob+label bounding boxes so IPs
+    // and hostnames stay separated without acting as a hard collision.
     const hostBounds = new Map();
     for (const host of hostArray) {
         hostBounds.set(host, hostLabelBounds(host));
@@ -561,23 +583,25 @@ function animate() {
                 continue;
             }
 
-            // Mass is proportional to blob size: heavier hosts move less.
+            // Soft repulsion: resolve only part of the overlap per frame so
+            // labels separate gently instead of hard-colliding.
             const totalMass = h1.radius + h2.radius;
             const horizontal = overlapX < overlapY;
-            const extent = (horizontal ? overlapX : overlapY) + 1;
+            const overlap = horizontal ? overlapX : overlapY;
+            const push = (overlap + 2) * 0.2;
 
             const moveH1 = (fraction) => {
                 if (horizontal) {
-                    h1.x -= Math.sign(h2.x - h1.x || 1) * extent * fraction;
+                    h1.x -= Math.sign(h2.x - h1.x || 1) * push * fraction;
                 } else {
-                    h1.y -= Math.sign(h2.y - h1.y || 1) * extent * fraction;
+                    h1.y -= Math.sign(h2.y - h1.y || 1) * push * fraction;
                 }
             };
             const moveH2 = (fraction) => {
                 if (horizontal) {
-                    h2.x += Math.sign(h2.x - h1.x || 1) * extent * fraction;
+                    h2.x += Math.sign(h2.x - h1.x || 1) * push * fraction;
                 } else {
-                    h2.y += Math.sign(h2.y - h1.y || 1) * extent * fraction;
+                    h2.y += Math.sign(h2.y - h1.y || 1) * push * fraction;
                 }
             };
 
@@ -661,15 +685,26 @@ function animate() {
         ctx.fill();
 
         const now = Date.now();
-        const glowing = host.lastSentAt > 0 && now - host.lastSentAt < settings.glowDuration * 1000;
         const passive = now - (host.lastActivityAt || now) > settings.passiveTimeout * 1000;
+
+        // Smoothly fade the glow in on activity and out once the glow window
+        // expires (instead of switching it on/off abruptly).
+        let glowTarget = 0;
+        if (host.lastSentAt > 0 && settings.glowDuration > 0) {
+            glowTarget = Math.max(0, 1 - (now - host.lastSentAt) / (settings.glowDuration * 1000));
+        }
+        const glowSmoothing = 1 - Math.exp(-dt / 0.35);
+        host.glowLevel = (host.glowLevel || 0) + (glowTarget - (host.glowLevel || 0)) * glowSmoothing;
+        if (host.glowLevel < 0.01) {
+            host.glowLevel = 0;
+        }
 
         ctx.save();
         if (passive) {
             ctx.globalAlpha = 0.3;
         }
-        if (glowing) {
-            ctx.shadowBlur = 18;
+        if (host.glowLevel > 0) {
+            ctx.shadowBlur = 20 * host.glowLevel;
             ctx.shadowColor = strokeColor;
         }
 
@@ -690,11 +725,12 @@ function animate() {
         const hostnameY = host.y + host.radius + 16;
         
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-        const ipWidth = ctx.measureText(host.ip).width;
+        const ipText = displayIP(host);
+        const ipWidth = ctx.measureText(ipText).width;
         ctx.fillRect(host.x - ipWidth / 2 - 2, ipY - 10, ipWidth + 4, 12);
         
         ctx.fillStyle = hasSent ? '#fff' : '#aaa';
-        ctx.fillText(host.ip, host.x, ipY);
+        ctx.fillText(ipText, host.x, ipY);
         
         const hostnameText = displayHostname(host);
         if (hostnameText) {

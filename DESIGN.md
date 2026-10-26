@@ -69,7 +69,8 @@ WebSocket messages are wrapped as:
   - **Dimmed (30% opacity)** — passive host with no traffic sent or received
     within the passive timeout (default 120 s).
   - **Glow** — host that sent a packet within the active glow duration (default
-    60 s).
+    10 s). The glow fades in on activity and fades out smoothly instead of
+    toggling abruptly.
 - Blob radius scales with traffic volume (sent + received bytes): the busiest
   host uses the maximum size, the least busy the minimum, others interpolate
   linearly.
@@ -97,7 +98,10 @@ WebSocket messages are wrapped as:
   locality: local↔local, local↔external, external↔external have separate,
   configurable strengths.
 - Collision resolution uses each host's combined blob + IP/hostname label
-  bounding box, so labels never overlap other hosts' labels (or blobs).
+  bounding box as a soft repulsion (a fraction of the overlap is resolved per
+  frame). The collision area scales with the rendered label content.
+- Long IPv6 address labels are truncated for display; copying a host still uses
+  the full address.
 - If hosts do not fit the viewport, positions are scaled ("zoomed out") to fit.
 - Dragging a blob repositions it and temporarily excludes it from physics.
 - Clicking a host or its labels copies the IP to the clipboard and shows a fading
@@ -123,7 +127,7 @@ Sliders:
 - Packet size (default 0.3)
 - Min host size (default 5 px)
 - Max host size (default 44 px)
-- Active glow duration (default 60 s)
+- Active glow duration (default 10 s)
 - Passive timeout (default 120 s)
 - Auto-remove passive hosts (checkbox, off by default; checked hosts are pruned
   continuously once they become passive)
