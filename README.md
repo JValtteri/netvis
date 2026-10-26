@@ -44,6 +44,17 @@ go build -o netvis ./cmd/netvis
 The resulting `netvis` binary is placed in the current directory (it is already
 listed in `.gitignore`).
 
+## Test
+
+```bash
+go test ./...
+go test -race ./...
+```
+
+Tests cover packet parsing, graph aggregation and snapshot isolation, display-name
+resolution caching, whois response parsing, and WebSocket hub message routing.
+Network-dependent lookups are stubbed in tests.
+
 ## Run
 
 ```bash

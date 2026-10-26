@@ -22,10 +22,11 @@ type Edge struct {
 }
 
 type Graph struct {
-	mu     sync.RWMutex
-	hosts  map[string]*Host
-	edges  map[string]*Edge
-	onHost func(Host)
+	mu      sync.RWMutex
+	hosts   map[string]*Host
+	edges   map[string]*Edge
+	onHost  func(Host)
+	resolve func(string) string
 
 	lookupMu  sync.Mutex
 	nameCache map[string]string
@@ -38,6 +39,7 @@ func New() *Graph {
 		edges:     make(map[string]*Edge),
 		nameCache: make(map[string]string),
 		pending:   make(map[string]bool),
+		resolve:   resolveName,
 	}
 }
 
@@ -109,7 +111,11 @@ func (g *Graph) scheduleLookup(ip string) {
 	g.lookupMu.Unlock()
 
 	go func() {
-		name := resolveName(ip)
+		resolve := g.resolve
+		if resolve == nil {
+			resolve = resolveName
+		}
+		name := resolve(ip)
 
 		g.lookupMu.Lock()
 		g.nameCache[ip] = name
