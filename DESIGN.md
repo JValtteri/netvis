@@ -96,7 +96,8 @@ WebSocket messages are wrapped as:
 - A force layout pulls connected hosts together. Attraction strength depends on
   locality: local↔local, local↔external, external↔external have separate,
   configurable strengths.
-- Collision resolution keeps blobs and their labels from overlapping.
+- Collision resolution uses each host's combined blob + IP/hostname label
+  bounding box, so labels never overlap other hosts' labels (or blobs).
 - If hosts do not fit the viewport, positions are scaled ("zoomed out") to fit.
 - Dragging a blob repositions it and temporarily excludes it from physics.
 - Clicking a host or its labels copies the IP to the clipboard and shows a fading
@@ -124,6 +125,8 @@ Sliders:
 - Max host size (default 44 px)
 - Active glow duration (default 60 s)
 - Passive timeout (default 120 s)
+- Auto-remove passive hosts (checkbox, off by default; checked hosts are pruned
+  continuously once they become passive)
 
 Buttons:
 

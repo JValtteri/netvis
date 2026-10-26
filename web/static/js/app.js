@@ -38,9 +38,10 @@ function hostAtPosition(pos) {
             return host;
         }
         // Hostname label below the blob
-        if (host.hostname) {
+        const hostname = displayHostname(host);
+        if (hostname) {
             const hostnameY = host.y + host.radius + 16;
-            const hostnameWidth = ctx.measureText(host.hostname).width;
+            const hostnameWidth = ctx.measureText(hostname).width;
             if (pos.x >= host.x - hostnameWidth / 2 - 2 && pos.x <= host.x + hostnameWidth / 2 + 2 &&
                 pos.y >= hostnameY - 10 && pos.y <= hostnameY + 2) {
                 return host;
@@ -162,7 +163,8 @@ const settings = {
     minHostSize: 5,
     maxHostSize: 44,
     glowDuration: 60,
-    passiveTimeout: 120
+    passiveTimeout: 120,
+    autoRemovePassive: false
 };
 
 function bindSlider(id, key, format, onChange) {
@@ -202,10 +204,25 @@ document.getElementById('removeSilent').addEventListener('click', () => {
     removeHosts((host) => !(host.sentCount > 0));
 });
 
-document.getElementById('removePassive').addEventListener('click', () => {
+document.getElementById('removePassive').addEventListener('click', removePassiveHosts);
+
+document.getElementById('autoRemovePassive').addEventListener('change', (e) => {
+    settings.autoRemovePassive = e.target.checked;
+    if (settings.autoRemovePassive) {
+        removePassiveHosts();
+    }
+});
+
+function removePassiveHosts() {
     const now = Date.now();
     removeHosts((host) => now - (host.lastActivityAt || now) > settings.passiveTimeout * 1000);
-});
+}
+
+setInterval(() => {
+    if (settings.autoRemovePassive) {
+        removePassiveHosts();
+    }
+}, 1000);
 
 function removeHosts(predicate) {
     const removed = [];
@@ -249,6 +266,28 @@ function isLocalIP(ip) {
     if (ip.startsWith('fe80:')) return true;
     if (ip.startsWith('fc00:') || ip.startsWith('fd00:')) return true;
     return false;
+}
+
+function displayHostname(host) {
+    if (!host.hostname) {
+        return '';
+    }
+    return host.hostname.length > 16 ? host.hostname.substring(0, 13) + '...' : host.hostname;
+}
+
+// Bounds of the blob plus its IP/hostname labels, relative to the blob center.
+// Used to keep labels from overlapping other hosts and labels.
+function hostLabelBounds(host) {
+    ctx.font = '11px monospace';
+    const ipHalf = ctx.measureText(host.ip).width / 2 + 2;
+    const hostname = displayHostname(host);
+    const hostnameHalf = hostname ? ctx.measureText(hostname).width / 2 + 2 : 0;
+    const margin = 8;
+    return {
+        halfWidth: Math.max(host.radius, ipHalf, hostnameHalf) + margin,
+        top: host.radius + 16 + margin,
+        bottom: host.radius + 18 + margin
+    };
 }
 
 function getHostTraffic(ip) {
@@ -499,29 +538,58 @@ function animate() {
         host.y = Math.max(host.radius + 80, Math.min(canvas.height - host.radius - 80, host.y));
     }
     
-    // Collision avoidance between hosts
+    // Collision avoidance including labels: keep the blob+label bounding boxes
+    // of every pair of hosts separated so IPs and hostnames never overlap.
+    const hostBounds = new Map();
+    for (const host of hostArray) {
+        hostBounds.set(host, hostLabelBounds(host));
+    }
+
     for (let i = 0; i < hostArray.length; i++) {
         for (let j = i + 1; j < hostArray.length; j++) {
             const h1 = hostArray[i];
             const h2 = hostArray[j];
-            const dx = h2.x - h1.x;
-            const dy = h2.y - h1.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            const minDist = h1.radius + h2.radius + 40;
-            if (dist < minDist && dist > 0) {
-                const force = (minDist - dist) / dist * 0.5;
-                const fx = dx * force;
-                const fy = dy * force;
-                // Mass is proportional to blob size: heavier hosts move less.
-                const totalMass = h1.radius + h2.radius;
-                if (h1 !== draggedHost) {
-                    h1.x -= fx * (h2.radius / totalMass) * 2;
-                    h1.y -= fy * (h2.radius / totalMass) * 2;
+            const b1 = hostBounds.get(h1);
+            const b2 = hostBounds.get(h2);
+
+            const overlapX = Math.min(h1.x + b1.halfWidth, h2.x + b2.halfWidth) -
+                Math.max(h1.x - b1.halfWidth, h2.x - b2.halfWidth);
+            const overlapY = Math.min(h1.y + b1.bottom, h2.y + b2.bottom) -
+                Math.max(h1.y - b1.top, h2.y - b2.top);
+
+            if (overlapX <= 0 || overlapY <= 0) {
+                continue;
+            }
+
+            // Mass is proportional to blob size: heavier hosts move less.
+            const totalMass = h1.radius + h2.radius;
+            const horizontal = overlapX < overlapY;
+            const extent = (horizontal ? overlapX : overlapY) + 1;
+
+            const moveH1 = (fraction) => {
+                if (horizontal) {
+                    h1.x -= Math.sign(h2.x - h1.x || 1) * extent * fraction;
+                } else {
+                    h1.y -= Math.sign(h2.y - h1.y || 1) * extent * fraction;
                 }
+            };
+            const moveH2 = (fraction) => {
+                if (horizontal) {
+                    h2.x += Math.sign(h2.x - h1.x || 1) * extent * fraction;
+                } else {
+                    h2.y += Math.sign(h2.y - h1.y || 1) * extent * fraction;
+                }
+            };
+
+            if (h1 === draggedHost) {
                 if (h2 !== draggedHost) {
-                    h2.x += fx * (h1.radius / totalMass) * 2;
-                    h2.y += fy * (h1.radius / totalMass) * 2;
+                    moveH2(1);
                 }
+            } else if (h2 === draggedHost) {
+                moveH1(1);
+            } else {
+                moveH1(h2.radius / totalMass);
+                moveH2(h1.radius / totalMass);
             }
         }
     }
@@ -628,13 +696,13 @@ function animate() {
         ctx.fillStyle = hasSent ? '#fff' : '#aaa';
         ctx.fillText(host.ip, host.x, ipY);
         
-        if (host.hostname) {
-            const hostname = host.hostname.length > 16 ? host.hostname.substring(0, 13) + '...' : host.hostname;
-            const hostnameWidth = ctx.measureText(hostname).width;
+        const hostnameText = displayHostname(host);
+        if (hostnameText) {
+            const hostnameWidth = ctx.measureText(hostnameText).width;
             ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
             ctx.fillRect(host.x - hostnameWidth / 2 - 2, hostnameY - 10, hostnameWidth + 4, 12);
             ctx.fillStyle = hasSent ? '#fff' : '#aaa';
-            ctx.fillText(hostname, host.x, hostnameY);
+            ctx.fillText(hostnameText, host.x, hostnameY);
         }
     }
     

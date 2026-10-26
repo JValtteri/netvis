@@ -116,7 +116,8 @@ re-apply `setcap` after each build.
   the least busy the smallest.
 - **Edges** connect IP pairs; particles travel source → destination.
 - **Dragging** a blob repositions it; connected hosts pull toward each other via a
-  force layout.
+  force layout. Collision repulsion accounts for label sizes so IP addresses and
+  hostnames never overlap other hosts or labels.
 - **Clicking** a host (blob or label) copies its IP address to the clipboard and
   shows a short confirmation toast.
 
@@ -141,6 +142,7 @@ Use the hamburger button in the top-right corner to open the settings panel.
 | Max host size | 44 | Largest blob radius. |
 | Active glow duration | 60 s | How long a host glows after sending a packet. |
 | Passive after | 120 s | Inactivity period before a host is dimmed as passive. |
+| Auto-remove passive hosts | off | Continuously removes hosts once they become passive. |
 
 Buttons:
 
