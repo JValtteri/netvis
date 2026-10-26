@@ -9,12 +9,66 @@ window.addEventListener('resize', () => {
     canvas.height = window.innerHeight;
 });
 
+function getMousePos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+    };
+}
+
+canvas.addEventListener('mousedown', (e) => {
+    const pos = getMousePos(e);
+    for (const host of hosts.values()) {
+        const dx = pos.x - host.x;
+        const dy = pos.y - host.y;
+        if (Math.sqrt(dx * dx + dy * dy) <= host.radius) {
+            draggedHost = host;
+            dragOffsetX = dx;
+            dragOffsetY = dy;
+            host.vx = 0;
+            host.vy = 0;
+            break;
+        }
+    }
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    const pos = getMousePos(e);
+    if (!draggedHost) {
+        // Show grab cursor when hovering over a host
+        let hover = false;
+        for (const host of hosts.values()) {
+            const dx = pos.x - host.x;
+            const dy = pos.y - host.y;
+            if (Math.sqrt(dx * dx + dy * dy) <= host.radius) {
+                hover = true;
+                break;
+            }
+        }
+        canvas.style.cursor = hover ? 'grab' : 'default';
+        return;
+    }
+    canvas.style.cursor = 'grabbing';
+    draggedHost.x = Math.max(draggedHost.radius, Math.min(canvas.width - draggedHost.radius, pos.x - dragOffsetX));
+    draggedHost.y = Math.max(draggedHost.radius, Math.min(canvas.height - draggedHost.radius, pos.y - dragOffsetY));
+});
+
+window.addEventListener('mouseup', () => {
+    draggedHost = null;
+    canvas.style.cursor = 'default';
+});
+
 const hosts = new Map();
 const edges = new Map();
 const particles = [];
 
 const hostCountEl = document.getElementById('hostCount');
 const edgeCountEl = document.getElementById('edgeCount');
+
+let draggedHost = null;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
 
 function edgeKey(src, dst) {
     return src + '->' + dst;
@@ -49,6 +103,44 @@ function isLocalIP(ip) {
     return false;
 }
 
+function getHostTraffic(ip) {
+    const host = hosts.get(ip);
+    if (!host) return 0;
+    return (host.bytesSent || 0) + (host.bytesReceived || 0);
+}
+
+function updateHostSizes() {
+    const hostArray = Array.from(hosts.values());
+    if (hostArray.length === 0) return;
+    let maxTraffic = -1;
+    let minTraffic = Infinity;
+    for (const host of hostArray) {
+        const t = getHostTraffic(host.ip);
+        if (t > maxTraffic) maxTraffic = t;
+        if (t < minTraffic) minTraffic = t;
+    }
+    if (maxTraffic === 0) {
+        for (const host of hostArray) {
+            host.radius = 22;
+        }
+        return;
+    }
+    const baseRadius = 22;
+    for (const host of hostArray) {
+        const t = getHostTraffic(host.ip);
+        if (t === maxTraffic && t === minTraffic) {
+            host.radius = baseRadius * 2;
+        } else if (t === maxTraffic) {
+            host.radius = baseRadius * 2;
+        } else if (t === minTraffic) {
+            host.radius = baseRadius * 0.5;
+        } else {
+            const ratio = (t - minTraffic) / (maxTraffic - minTraffic);
+            host.radius = baseRadius * 0.5 + ratio * (baseRadius * 2 - baseRadius * 0.5);
+        }
+    }
+}
+
 function getHostPosition(ip) {
     if (!hosts.has(ip)) {
         hosts.set(ip, {
@@ -60,8 +152,11 @@ function getHostPosition(ip) {
             vy: (Math.random() - 0.5) * 0.3,
             radius: 22,
             sentCount: 0,
-            receivedCount: 0
+            receivedCount: 0,
+            bytesSent: 0,
+            bytesReceived: 0
         });
+        updateHostSizes();
     }
     return hosts.get(ip);
 }
@@ -85,7 +180,9 @@ ws.onmessage = (event) => {
                         vy: (Math.random() - 0.5) * 0.3,
                         radius: 22,
                         sentCount: 0,
-                        receivedCount: 0
+                        receivedCount: 0,
+                        bytesSent: 0,
+                        bytesReceived: 0
                     });
                 } else {
                     const host = hosts.get(h.ip);
@@ -96,8 +193,19 @@ ws.onmessage = (event) => {
         if (data.edges) {
             for (const e of data.edges) {
                 edges.set(edgeKey(e.srcIP, e.dstIP), e);
+                const srcHost = hosts.get(e.srcIP);
+                const dstHost = hosts.get(e.dstIP);
+                if (srcHost) {
+                    srcHost.sentCount = (srcHost.sentCount || 0) + (e.count || 0);
+                    srcHost.bytesSent = (srcHost.bytesSent || 0) + (e.bytes || 0);
+                }
+                if (dstHost) {
+                    dstHost.receivedCount = (dstHost.receivedCount || 0) + (e.count || 0);
+                    dstHost.bytesReceived = (dstHost.bytesReceived || 0) + (e.bytes || 0);
+                }
             }
         }
+        updateHostSizes();
         updateStats();
     } else if (msg.type === 'packet') {
         const ev = msg.data;
@@ -105,6 +213,9 @@ ws.onmessage = (event) => {
         const dstHost = getHostPosition(ev.dstIP);
         srcHost.sentCount = (srcHost.sentCount || 0) + 1;
         dstHost.receivedCount = (dstHost.receivedCount || 0) + 1;
+        srcHost.bytesSent = (srcHost.bytesSent || 0) + ev.bytes;
+        dstHost.bytesReceived = (dstHost.bytesReceived || 0) + ev.bytes;
+        updateHostSizes();
         
         const key = edgeKey(ev.srcIP, ev.dstIP);
         if (!edges.has(key)) {
@@ -124,7 +235,7 @@ ws.onmessage = (event) => {
             tx: dst.x,
             ty: dst.y,
             progress: 0,
-            speed: 0.02,
+            speed: 0.01,
             size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)),
             color: protocolColors[ev.proto] || protocolColors.OTHER,
             life: 1.0
@@ -170,9 +281,50 @@ function animate() {
         }
     }
     
+    // Attraction force along connections.
+    // Local<->local connections pull strongest, local<->external medium,
+    // external<->external weakest.
+    for (const edge of edges.values()) {
+        const src = hosts.get(edge.srcIP);
+        const dst = hosts.get(edge.dstIP);
+        if (!src || !dst || src === dst) continue;
+        
+        const srcLocal = isLocalIP(src.ip);
+        const dstLocal = isLocalIP(dst.ip);
+        let strength;
+        if (srcLocal && dstLocal) {
+            strength = 0.012;
+        } else if (srcLocal || dstLocal) {
+            strength = 0.005;
+        } else {
+            strength = 0.002;
+        }
+        
+        const dx = dst.x - src.x;
+        const dy = dst.y - src.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const targetDist = src.radius + dst.radius + 90;
+        let force = (dist - targetDist) * strength * 0.02;
+        force = Math.max(-1.5, Math.min(1.5, force));
+        
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        
+        if (src !== draggedHost) {
+            src.x += fx;
+            src.y += fy;
+        }
+        if (dst !== draggedHost) {
+            dst.x -= fx;
+            dst.y -= fy;
+        }
+    }
+    
     // Update host positions (gentle drift) with collision avoidance
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
+        if (host === draggedHost) continue;
+        
         host.x += host.vx || 0;
         host.y += host.vy || 0;
         
@@ -200,10 +352,14 @@ function animate() {
                 const force = (minDist - dist) / dist * 0.5;
                 const fx = dx * force;
                 const fy = dy * force;
-                h1.x -= fx;
-                h1.y -= fy;
-                h2.x += fx;
-                h2.y += fy;
+                if (h1 !== draggedHost) {
+                    h1.x -= fx;
+                    h1.y -= fy;
+                }
+                if (h2 !== draggedHost) {
+                    h2.x += fx;
+                    h2.y += fy;
+                }
             }
         }
     }
