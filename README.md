@@ -116,9 +116,9 @@ re-apply `setcap` after each build.
   - Glowing: host that sent a packet within the recent activity window
 - **Blob size** scales with traffic volume: the busiest host is the largest and
   the least busy the smallest.
-- **Edges** connect IP pairs; particles travel source → destination. Edges that
-  touch the NetVis server's own addresses are drawn as a thin glowing yellow line
-  and never animate packets.
+- **Edges** connect IP pairs; particles travel source → destination. Only TCP
+  connections to the NetVis frontend (HTTP/WebSocket) on the web port are drawn
+  as a thin glowing yellow line and never animate packets.
 - **Dragging** a blob repositions it; connected hosts pull toward each other via a
   force layout. Velocity is damped with drag so blobs settle instead of creeping.
   Soft repulsion accounts for label sizes (and scales with label content) with

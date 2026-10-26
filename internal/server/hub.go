@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 
 	"netvis/internal/capture"
@@ -16,10 +18,11 @@ type Hub struct {
 	unregister chan *Client
 	g          *graph.Graph
 	serverIPs  []string
+	webPort    int
 	mu         sync.RWMutex
 }
 
-func NewHub(g *graph.Graph) *Hub {
+func NewHub(g *graph.Graph, addr string) *Hub {
 	return &Hub{
 		clients:    make(map[*Client]bool),
 		broadcast:  make(chan []byte),
@@ -27,7 +30,30 @@ func NewHub(g *graph.Graph) *Hub {
 		unregister: make(chan *Client),
 		g:          g,
 		serverIPs:  detectServerIPs(),
+		webPort:    extractPort(addr),
 	}
+}
+
+// extractPort parses the port from an address like ":8080", "0.0.0.0:8080", or "[::]:8080".
+func extractPort(addr string) int {
+	if addr == "" {
+		return 8080
+	}
+	// Handle IPv6 addresses
+	if strings.HasPrefix(addr, "[") {
+		if idx := strings.LastIndex(addr, ":"); idx != -1 {
+			if p, err := strconv.Atoi(addr[idx+1 : len(addr)-1]); err == nil {
+				return p
+			}
+		}
+		return 8080
+	}
+	if idx := strings.LastIndex(addr, ":"); idx != -1 {
+		if p, err := strconv.Atoi(addr[idx+1:]); err == nil {
+			return p
+		}
+	}
+	return 8080
 }
 
 // detectServerIPs returns the addresses assigned to this machine, across all
@@ -72,6 +98,7 @@ func (h *Hub) Run() {
 			// send snapshot
 			snap := h.g.Snapshot()
 			snap.ServerIPs = h.serverIPs
+			snap.WebPort = h.webPort
 			if b, err := json.Marshal(map[string]interface{}{
 				"type": "snapshot",
 				"data": snap,

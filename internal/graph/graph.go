@@ -188,6 +188,8 @@ type Snapshot struct {
 	// ServerIPs lists the local addresses of the NetVis server. Clients use
 	// these to render traffic to/from the server itself differently.
 	ServerIPs []string `json:"serverIPs"`
+	// WebPort is the TCP port serving the NetVis frontend (HTTP/WebSocket).
+	WebPort int `json:"webPort"`
 }
 
 func (g *Graph) Snapshot() Snapshot {

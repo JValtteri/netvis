@@ -15,6 +15,8 @@ type Event struct {
 	Timestamp time.Time `json:"ts"`
 	SrcIP     string    `json:"srcIP"`
 	DstIP     string    `json:"dstIP"`
+	SrcPort   int       `json:"srcPort,omitempty"`
+	DstPort   int       `json:"dstPort,omitempty"`
 	Proto     string    `json:"proto"`
 	Bytes     int       `json:"bytes"`
 }
@@ -72,6 +74,7 @@ func (c *Capture) Start() error {
 
 func (c *Capture) processPacket(pkt gopacket.Packet) {
 	var srcIP, dstIP string
+	var srcPort, dstPort int
 	var proto string = "OTHER"
 
 	if net := pkt.NetworkLayer(); net != nil {
@@ -90,11 +93,15 @@ func (c *Capture) processPacket(pkt gopacket.Packet) {
 	}
 
 	if trans := pkt.TransportLayer(); trans != nil {
-		switch trans.(type) {
+		switch v := trans.(type) {
 		case *layers.TCP:
 			proto = "TCP"
+			srcPort = int(v.SrcPort)
+			dstPort = int(v.DstPort)
 		case *layers.UDP:
 			proto = "UDP"
+			srcPort = int(v.SrcPort)
+			dstPort = int(v.DstPort)
 		default:
 			proto = "OTHER"
 		}
@@ -115,6 +122,8 @@ func (c *Capture) processPacket(pkt gopacket.Packet) {
 		Timestamp: time.Now(),
 		SrcIP:     srcIP,
 		DstIP:     dstIP,
+		SrcPort:   srcPort,
+		DstPort:   dstPort,
 		Proto:     proto,
 		Bytes:     bytes,
 	}

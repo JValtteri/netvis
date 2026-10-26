@@ -44,7 +44,7 @@ Each captured packet becomes an event:
 WebSocket messages are wrapped as:
 
 - `{"type": "packet", "data": <event>}`
-- `{"type": "snapshot", "data": {"hosts": [...], "edges": [...], "serverIPs": [...]}}`
+- `{"type": "snapshot", "data": {"hosts": [...], "edges": [...], "serverIPs": [...], "webPort": 8080}}`
 - `{"type": "host", "data": <host>}` — sent when a host's display name is resolved
   asynchronously.
 
@@ -81,14 +81,16 @@ WebSocket messages are wrapped as:
 
 - Each unique ordered IP pair (source → destination) is an edge.
 - Edges are drawn behind hosts and accumulate packet count and byte totals.
-- Edges that touch one of the NetVis server's own interface addresses (reported
-  in the snapshot as `serverIPs`) are rendered as a thin glowing yellow line.
+- Only TCP connections to the NetVis frontend on its web port (reported in the
+  snapshot as `webPort`) that involve one of the server's addresses are rendered
+  as a thin glowing yellow line. Other traffic to/from the server machine is
+  treated normally.
 
 ### Packets
 
 - Each packet is a particle travelling from source to destination, except
-  traffic to/from the NetVis server itself, which has no particles (the glowing
-  edge represents it).
+  TCP connections to the NetVis frontend, which have no particles (the glowing
+  edge represents them).
 - Particle position is recalculated from the live host positions every frame, so
   fast-moving hosts are not missed.
 - Colour is determined by protocol: TCP (blue), UDP (green), ICMP (orange),

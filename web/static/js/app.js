@@ -329,11 +329,26 @@ const hosts = new Map();
 const edges = new Map();
 const particles = [];
 const serverIPs = new Set();
+let webPort = 0;
 
-// Traffic to or from the NetVis server itself is drawn as a special edge
-// instead of individual packets.
-function isServerEdge(srcIP, dstIP) {
-    return serverIPs.has(srcIP) || serverIPs.has(dstIP);
+// Only TCP connections to/from the NetVis frontend (HTTP/WebSocket) on the
+// web port are treated as frontend traffic - drawn as a glowing edge with
+// no particles.
+const frontendConnections = new Set();
+
+function frontendKey(srcIP, dstIP) {
+    return srcIP + '|' + dstIP;
+}
+
+function isFrontendTraffic(srcIP, dstIP) {
+    if (!webPort || webPort <= 0) {
+        return false;
+    }
+    if (!serverIPs.has(srcIP) && !serverIPs.has(dstIP)) {
+        return false;
+    }
+    return frontendConnections.has(frontendKey(srcIP, dstIP)) ||
+           frontendConnections.has(frontendKey(dstIP, srcIP));
 }
 
 const hostCountEl = document.getElementById('hostCount');
@@ -575,10 +590,16 @@ ws.onmessage = (event) => {
     if (msg.type === 'snapshot') {
         const data = msg.data;
         serverIPs.clear();
+        frontendConnections.clear();
         if (data.serverIPs) {
             for (const ip of data.serverIPs) {
                 serverIPs.add(ip);
             }
+        }
+        if (typeof data.webPort === 'number') {
+            webPort = data.webPort;
+        } else if (data.webPort) {
+            webPort = parseInt(data.webPort);
         }
         if (data.hosts) {
             for (const h of data.hosts) {
@@ -652,9 +673,20 @@ ws.onmessage = (event) => {
             e.bytes += ev.bytes;
         }
         
-        // Packets to/from the NetVis server are represented by a glowing
-        // edge, so don't animate individual particles for them.
-        if (!isServerEdge(ev.srcIP, ev.dstIP)) {
+        // Track connections to/from the NetVis web frontend (HTTP/WebSocket).
+        if (webPort > 0 && ev.proto === 'TCP') {
+            const srcIsServer = serverIPs.has(ev.srcIP);
+            const dstIsServer = serverIPs.has(ev.dstIP);
+            if (srcIsServer && ev.srcPort === webPort) {
+                frontendConnections.add(frontendKey(ev.dstIP, ev.srcIP));
+            } else if (dstIsServer && ev.dstPort === webPort) {
+                frontendConnections.add(frontendKey(ev.srcIP, ev.dstIP));
+            }
+        }
+
+        // Only connections that use the NetVis frontend are represented by a
+        // glowing edge; don't animate individual particles for them.
+        if (!isFrontendTraffic(ev.srcIP, ev.dstIP)) {
             particles.push({
                 srcIP: ev.srcIP,
                 dstIP: ev.dstIP,
@@ -817,12 +849,12 @@ function animate() {
         }
     }
     
-    // Draw edges. Regular connections are thin gray lines; traffic to or
-    // from the NetVis server itself is a thin glowing yellow line.
+    // Draw edges. Regular connections are thin gray lines; only connections
+    // that use the NetVis frontend are shown as a thin glowing yellow line.
     ctx.strokeStyle = 'rgba(55, 55, 55, 0.9)';
     ctx.lineWidth = 1 / camera.scale;
     for (const edge of edges.values()) {
-        if (isServerEdge(edge.srcIP, edge.dstIP)) {
+        if (isFrontendTraffic(edge.srcIP, edge.dstIP)) {
             continue;
         }
         const src = hosts.get(edge.srcIP);
@@ -841,7 +873,7 @@ function animate() {
     ctx.shadowBlur = 10 / camera.scale;
     ctx.shadowColor = 'rgba(255, 220, 80, 0.9)';
     for (const edge of edges.values()) {
-        if (!isServerEdge(edge.srcIP, edge.dstIP)) {
+        if (!isFrontendTraffic(edge.srcIP, edge.dstIP)) {
             continue;
         }
         const src = hosts.get(edge.srcIP);
@@ -873,8 +905,8 @@ function animate() {
             continue;
         }
 
-        // Never animate packets to/from the NetVis server itself.
-        if (isServerEdge(p.srcIP, p.dstIP)) {
+        // Never animate packets using the NetVis frontend.
+        if (isFrontendTraffic(p.srcIP, p.dstIP)) {
             particles.splice(i, 1);
             continue;
         }
