@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetVis - Network Traffic Visualizer</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="info">
+        <h1>NetVis</h1>
+        <div id="stats">Hosts: <span id="hostCount">0</span> | Edges: <span id="edgeCount">0</span></div>
+        <div id="legend">
+            <span class="legend-item"><span class="color" style="background:#4a90e2"></span> TCP</span>
+            <span class="legend-item"><span class="color" style="background:#50c878"></span> UDP</span>
+            <span class="legend-item"><span class="color" style="background:#f39c12"></span> ICMP</span>
+            <span class="legend-item"><span class="color" style="background:#e74c3c"></span> OTHER</span>
+        </div>
+    </div>
+    <canvas id="canvas"></canvas>
+    <script src="js/app.js"></script>
+</body>
+</html>
