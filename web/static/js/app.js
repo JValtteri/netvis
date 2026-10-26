@@ -82,12 +82,12 @@ const protocolColors = {
 };
 
 const settings = {
-    attractLocalLocal: 0.012,
-    attractLocalExternal: 0.005,
-    attractExternalExternal: 0.002,
-    packetSpeed: 0.01,
+    attractLocalLocal: 0.030,
+    attractLocalExternal: 0.020,
+    attractExternalExternal: 0.020,
+    packetSpeed: 0.005,
     packetSizeScale: 1,
-    minHostSize: 11,
+    minHostSize: 5,
     maxHostSize: 44
 };
 

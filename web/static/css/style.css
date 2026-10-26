@@ -37,7 +37,19 @@ body {
     color: #aaa;
 }
 
-#legend {
+.legend-group {
+    margin-top: 8px;
+}
+
+.legend-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #777;
+    margin-bottom: 3px;
+}
+
+.legend-row {
     display: flex;
     gap: 12px;
     flex-wrap: wrap;
