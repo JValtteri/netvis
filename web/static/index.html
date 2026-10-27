@@ -71,6 +71,22 @@
                 </div>
 
                 <div class="menu-group">
+                    <div class="menu-group-title">Stability thresholds</div>
+                    <label class="slider-row" for="velocitySleepThreshold">
+                        <span>Velocity sleep <output id="velocitySleepThresholdValue"></output></span>
+                        <input type="range" id="velocitySleepThreshold" min="0" max="0.5" step="0.005" value="0.1">
+                    </label>
+                    <label class="slider-row" for="forceSleepThreshold">
+                        <span>Force sleep <output id="forceSleepThresholdValue"></output></span>
+                        <input type="range" id="forceSleepThreshold" min="0" max="0.2" step="0.001" value="0.01">
+                    </label>
+                    <label class="slider-row" for="positionSleepThreshold">
+                        <span>Position sleep <output id="positionSleepThresholdValue"></output></span>
+                        <input type="range" id="positionSleepThreshold" min="0" max="1" step="0.005" value="0.05">
+                    </label>
+                </div>
+
+                <div class="menu-group">
                     <div class="menu-group-title">Particles</div>
                     <label class="slider-row" for="packetSpeed">
                         <span>Packet speed <output id="packetSpeedValue"></output></span>
@@ -91,6 +107,10 @@
                     <label class="slider-row" for="maxHostSize">
                         <span>Max host size <output id="maxHostSizeValue"></output></span>
                         <input type="range" id="maxHostSize" min="10" max="120" step="1" value="44">
+                    </label>
+                    <label class="slider-row" for="collisionHalo">
+                        <span>Collision halo <output id="collisionHaloValue"></output></span>
+                        <input type="range" id="collisionHalo" min="0" max="100" step="1" value="20">
                     </label>
                     <label class="slider-row" for="glowDuration">
                         <span>Active glow duration (s) <output id="glowDurationValue"></output></span>
