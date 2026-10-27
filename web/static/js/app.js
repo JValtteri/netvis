@@ -1,27 +1,51 @@
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+// Canvas size will be set by updateCanvasSize() called below
+
+function updateCanvasSize() {
+    // Use visual viewport if available for better mobile support
+    if (window.visualViewport) {
+        canvas.width = Math.floor(window.visualViewport.width);
+        canvas.height = Math.floor(window.visualViewport.height);
+    } else {
+        canvas.width = Math.floor(window.innerWidth);
+        canvas.height = Math.floor(window.innerHeight);
+    }
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+}
+
+updateCanvasSize();
 
 window.addEventListener('resize', () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    if (isMobileDevice()) {
-        setTimeout(() => fitToView(), 150);
-    }
+    updateCanvasSize();
+    setTimeout(() => {
+        fitToView();
+    }, 100);
     needRedraw = true;
 });
 
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+        updateCanvasSize();
+        setTimeout(() => {
+            fitToView();
+        }, 100);
+        needRedraw = true;
+    });
+    window.visualViewport.addEventListener('scroll', () => {
+        // Prevent unwanted scroll on mobile
+        window.scrollTo(0, 0);
+    });
+}
+
 window.addEventListener('orientationchange', () => {
     setTimeout(() => {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        if (isMobileDevice()) {
-            fitToView();
-        }
+        updateCanvasSize();
+        fitToView();
         needRedraw = true;
-    }, 200);
+    }, 300);
 });
 
 function getMousePos(e) {
@@ -98,11 +122,11 @@ function fitToView() {
 
     const mobile = isMobileDevice();
     // Account for UI overlays on mobile (info panel top-left, controls bottom-right)
-    const padding = mobile ? Math.max(60, Math.min(canvas.width, canvas.height) * 0.12) : 40;
-    const topOffset = mobile ? 80 : 0; // leave space for top info panel
-    const bottomOffset = mobile ? 80 : 0; // leave space for bottom controls
-    const leftOffset = mobile ? 20 : 0;
-    const rightOffset = mobile ? 20 : 0;
+    const padding = mobile ? Math.max(40, Math.min(canvas.width, canvas.height) * 0.08) : 40;
+    const topOffset = mobile ? 60 : 0; // leave space for top info panel
+    const bottomOffset = mobile ? 60 : 0; // leave space for bottom controls
+    const leftOffset = mobile ? 10 : 0;
+    const rightOffset = mobile ? 10 : 0;
     const availableWidth = Math.max(1, canvas.width - padding * 2 - leftOffset - rightOffset);
     const availableHeight = Math.max(1, canvas.height - padding * 2 - topOffset - bottomOffset);
     const spanX = Math.max(1, maxX - minX);
@@ -111,7 +135,7 @@ function fitToView() {
     const scale = clamp(
         Math.min(availableWidth / spanX, availableHeight / spanY),
         camera.minScale,
-        mobile ? Math.min(camera.maxScale, 1.5) : Math.min(camera.maxScale, 2)
+        mobile ? Math.min(camera.maxScale, 3) : Math.min(camera.maxScale, 2)
     );
 
     camera.scale = scale;
@@ -731,31 +755,45 @@ function distancePointToSegment(px, py, x1, y1, x2, y2) {
 }
 
 function findBestPlacement() {
-    // Try to find position with fewest edge crossings
+    // Try to find position with fewest edge crossings and away from other hosts
     const candidates = [];
     const centerX = canvas.width / 2;
     const centerY = canvas.height / 2;
     // Try positions in a spiral around center and near existing clusters
-    for (let ring = 1; ring <= 8; ring++) {
-        const radius = ring * 80;
-        const steps = Math.max(8, ring * 6);
+    for (let ring = 1; ring <= 10; ring++) {
+        const radius = ring * 100;
+        const steps = Math.max(10, ring * 8);
         for (let i = 0; i < steps; i++) {
             const angle = (i / steps) * Math.PI * 2;
-            const x = centerX + Math.cos(angle) * radius + (Math.random() - 0.5) * 40;
-            const y = centerY + Math.sin(angle) * radius + (Math.random() - 0.5) * 40;
-            const crossings = countEdgeIntersections(x, y, 22);
+            const x = centerX + Math.cos(angle) * radius + (Math.random() - 0.5) * 60;
+            const y = centerY + Math.sin(angle) * radius + (Math.random() - 0.5) * 60;
+            let crossings = countEdgeIntersections(x, y, 22);
+            // Penalize positions too close to existing hosts
+            let minHostDist = Infinity;
+            for (const h of hosts.values()) {
+                const d = Math.hypot(x - h.x, y - h.y);
+                if (d < minHostDist) minHostDist = d;
+            }
+            if (minHostDist < 150) crossings += (150 - minHostDist) * 0.1;
             candidates.push({ x, y, crossings });
         }
     }
     // Also try positions near existing hosts but spread out
     if (hosts.size > 0) {
         for (const host of hosts.values()) {
-            for (let i = 0; i < 6; i++) {
+            for (let i = 0; i < 8; i++) {
                 const angle = Math.random() * Math.PI * 2;
-                const dist = host.radius + 150 + Math.random() * 100;
+                const dist = host.radius + 200 + Math.random() * 150;
                 const x = host.x + Math.cos(angle) * dist;
                 const y = host.y + Math.sin(angle) * dist;
-                const crossings = countEdgeIntersections(x, y, 22);
+                let crossings = countEdgeIntersections(x, y, 22);
+                let minHostDist = Infinity;
+                for (const h of hosts.values()) {
+                    if (h === host) continue;
+                    const d = Math.hypot(x - h.x, y - h.y);
+                    if (d < minHostDist) minHostDist = d;
+                }
+                if (minHostDist < 150) crossings += (150 - minHostDist) * 0.1;
                 candidates.push({ x, y, crossings });
             }
         }
@@ -765,7 +803,7 @@ function findBestPlacement() {
     }
     candidates.sort((a, b) => a.crossings - b.crossings);
     // Pick from the best few with some randomness
-    const best = candidates.slice(0, Math.min(5, candidates.length));
+    const best = candidates.slice(0, Math.min(3, candidates.length));
     const chosen = best[Math.floor(Math.random() * best.length)];
     return { x: chosen.x, y: chosen.y };
 }
@@ -1070,33 +1108,41 @@ function runPhysics(stepDt) {
             const totalMass = h1.radius + h2.radius;
             const horizontal = overlapX < overlapY;
             const overlap = horizontal ? overlapX : overlapY;
-            const push = Math.min(overlap + 2, 8) * 0.15;
+            const push = Math.min(overlap + 4, 12) * 0.4;
 
             const moveH1 = (fraction) => {
                 if (h1 === draggedHost) return;
                 if (horizontal) {
-                    h1.vx = (h1.vx || 0) - Math.sign(h2.x - h1.x || 1) * push * fraction * 0.5;
+                    const dir = Math.sign(h2.x - h1.x) || 1;
+                    h1.vx = (h1.vx || 0) - dir * push * fraction * 1.2;
                 } else {
-                    h1.vy = (h1.vy || 0) - Math.sign(h2.y - h1.y || 1) * push * fraction * 0.5;
+                    const dir = Math.sign(h2.y - h1.y) || 1;
+                    h1.vy = (h1.vy || 0) - dir * push * fraction * 1.2;
                 }
             };
             const moveH2 = (fraction) => {
                 if (h2 === draggedHost) return;
                 if (horizontal) {
-                    h2.vx = (h2.vx || 0) + Math.sign(h2.x - h1.x || 1) * push * fraction * 0.5;
+                    const dir = Math.sign(h2.x - h1.x) || 1;
+                    h2.vx = (h2.vx || 0) + dir * push * fraction * 1.2;
                 } else {
-                    h2.vy = (h2.vy || 0) + Math.sign(h2.y - h1.y || 1) * push * fraction * 0.5;
+                    const dir = Math.sign(h2.y - h1.y) || 1;
+                    h2.vy = (h2.vy || 0) + dir * push * fraction * 1.2;
                 }
             };
 
             if (h1 === draggedHost) {
                 if (h2 !== draggedHost) {
-                    h2.vx = (h2.vx || 0) + Math.sign(h2.x - h1.x || 1) * push * 0.5;
-                    h2.vy = (h2.vy || 0) + Math.sign(h2.y - h1.y || 1) * push * 0.5;
+                    const dirX = Math.sign(h2.x - h1.x) || 1;
+                    const dirY = Math.sign(h2.y - h1.y) || 1;
+                    if (horizontal) h2.vx = (h2.vx || 0) + dirX * push * 1.5;
+                    else h2.vy = (h2.vy || 0) + dirY * push * 1.5;
                 }
             } else if (h2 === draggedHost) {
-                h1.vx = (h1.vx || 0) - Math.sign(h2.x - h1.x || 1) * push * 0.5;
-                h1.vy = (h1.vy || 0) - Math.sign(h2.y - h1.y || 1) * push * 0.5;
+                const dirX = Math.sign(h2.x - h1.x) || 1;
+                const dirY = Math.sign(h2.y - h1.y) || 1;
+                if (horizontal) h1.vx = (h1.vx || 0) - dirX * push * 1.5;
+                else h1.vy = (h1.vy || 0) - dirY * push * 1.5;
             } else {
                 moveH1(h2.radius / totalMass);
                 moveH2(h1.radius / totalMass);
