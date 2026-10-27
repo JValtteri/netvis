@@ -356,12 +356,15 @@ const serverIPs = new Set();
 let hostArrayCache = [];
 let hostArrayDirty = true;
 
+// Cached label bounds
+const hostLabelBoundsCache = new Map();
+
 // Spatial indexing for collision detection
 const SPATIAL_CELL_SIZE = 200;
 const spatialGrid = new Map();
 
 function spatialKey(cx, cy) {
-    return cx + ',' + cy;
+    return cx * 131542391 + cy;
 }
 
 function rebuildSpatialGrid() {
@@ -544,6 +547,7 @@ function removeHosts(predicate) {
     for (const ip of removed) {
         hosts.delete(ip);
     }
+    hostLabelBoundsCache.clear();
     for (const [key, edge] of edges) {
         if (!hosts.has(edge.srcIP) || !hosts.has(edge.dstIP)) {
             edges.delete(key);
@@ -600,6 +604,11 @@ function displayIP(host) {
 // Bounds of the blob plus its IP/hostname labels, relative to the blob center.
 // The label collision area grows with the rendered label content.
 function hostLabelBounds(host) {
+    const key = host.ip + '|' + displayIP(host) + '|' + displayHostname(host) + '|' + Math.round(host.radius);
+    const cached = hostLabelBoundsCache.get(key);
+    if (cached) {
+        return cached;
+    }
     ctx.font = '11px monospace';
     const ipWidth = ctx.measureText(displayIP(host)).width + 4;
     const hostname = displayHostname(host);
@@ -612,11 +621,13 @@ function hostLabelBounds(host) {
     // touching the hostname label of another.
     const verticalMargin = 12;
 
-    return {
+    const bounds = {
         halfWidth: width / 2 + padding,
         top: host.radius + 16 + padding * 0.5 + verticalMargin,
         bottom: host.radius + 18 + padding * 0.5 + verticalMargin
     };
+    hostLabelBoundsCache.set(key, bounds);
+    return bounds;
 }
 
 function getHostTraffic(ip) {
@@ -639,19 +650,28 @@ function updateHostSizes() {
     const maxRadius = Math.max(settings.minHostSize, settings.maxHostSize);
     if (maxTraffic === 0) {
         for (const host of hostArray) {
+            const old = host.radius;
             host.radius = (minRadius + maxRadius) / 2;
+            if (old !== host.radius) {
+                hostLabelBoundsCache.clear();
+            }
         }
         return;
     }
     for (const host of hostArray) {
         const t = getHostTraffic(host.ip);
+        let newRadius;
         if (t === maxTraffic) {
-            host.radius = maxRadius;
+            newRadius = maxRadius;
         } else if (t === minTraffic) {
-            host.radius = minRadius;
+            newRadius = minRadius;
         } else {
             const ratio = (t - minTraffic) / (maxTraffic - minTraffic);
-            host.radius = minRadius + ratio * (maxRadius - minRadius);
+            newRadius = minRadius + ratio * (maxRadius - minRadius);
+        }
+        if (host.radius !== newRadius) {
+            host.radius = newRadius;
+            hostLabelBoundsCache.clear();
         }
     }
 }
@@ -919,11 +939,13 @@ function handleMessage(msg) {
                         lastActivityAt: Date.now(),
                         glowLevel: 0
                     });
+                    hostLabelBoundsCache.clear();
                     hostArrayDirty = true;
                     needRedraw = true;
                 } else {
                     const host = hosts.get(h.ip);
                     host.hostname = h.hostname;
+                    hostLabelBoundsCache.clear();
                 }
             }
         }
@@ -943,6 +965,7 @@ function handleMessage(msg) {
                 needRedraw = true;
             }
         }
+        hostLabelBoundsCache.clear();
         updateHostSizes();
         updateStats();
     } else if (msg.type === 'host') {
@@ -951,6 +974,7 @@ function handleMessage(msg) {
         if (host) {
             if (host.hostname !== info.hostname) {
                 host.hostname = info.hostname;
+                hostLabelBoundsCache.clear();
                 needRedraw = true;
             }
         }
@@ -1026,6 +1050,7 @@ function runPhysics(stepDt) {
     updateHostArrayCache();
     const hostArray = hostArrayCache;
     const dt = Math.max(1e-6, stepDt);
+    if (hostArray.length === 0) return;
     
     // Attraction force along connections (spring-like, dt-scaled).
     for (const edge of edges.values()) {
@@ -1171,78 +1196,92 @@ function runPhysics(stepDt) {
         }
     }
     
-    // Soft label-aware repulsion using spatial indexing
+    // Constraint-based label/blob repulsion (positional relaxation, decoupled from velocity damping)
     const hostBounds = new Map();
     for (let i = 0; i < hostArray.length; i++) {
         hostBounds.set(hostArray[i], hostLabelBounds(hostArray[i]));
     }
 
     rebuildSpatialGrid();
-    const processed = new Set();
-    for (let i = 0; i < hostArray.length; i++) {
-        const h1 = hostArray[i];
-        const nearby = getNearbyHosts(h1);
-        for (let k = 0; k < nearby.length; k++) {
-            const h2 = nearby[k];
-            if (h1 === h2) continue;
-            const keyPair = h1 < h2 ? h1.ip + '|' + h2.ip : h2.ip + '|' + h1.ip;
-            if (processed.has(keyPair)) continue;
-            processed.add(keyPair);
-            
-            const b1 = hostBounds.get(h1);
-            const b2 = hostBounds.get(h2);
-            if (!b1 || !b2) continue;
+    const iterations = hostArray.length > 200 ? 2 : 3;
+    const stiffness = 0.6;
+    for (let iter = 0; iter < iterations; iter++) {
+        const processed = new Set();
+        let maxDisp = 0;
+        for (let i = 0; i < hostArray.length; i++) {
+            const h1 = hostArray[i];
+            const nearby = getNearbyHosts(h1);
+            for (let k = 0; k < nearby.length; k++) {
+                const h2 = nearby[k];
+                if (h1 === h2) continue;
+                const keyPair = h1.ip < h2.ip ? h1.ip + '|' + h2.ip : h2.ip + '|' + h1.ip;
+                if (processed.has(keyPair)) continue;
+                processed.add(keyPair);
 
-            const overlapX = Math.min(h1.x + b1.halfWidth, h2.x + b2.halfWidth) -
-                Math.max(h1.x - b1.halfWidth, h2.x - b2.halfWidth);
-            const overlapY = Math.min(h1.y + b1.bottom, h2.y + b2.bottom) -
-                Math.max(h1.y - b1.top, h2.y - b2.top);
+                const b1 = hostBounds.get(h1);
+                const b2 = hostBounds.get(h2);
+                if (!b1 || !b2) continue;
 
-            if (overlapX <= 0 || overlapY <= 0) {
-                continue;
-            }
+                const overlapX = Math.min(h1.x + b1.halfWidth, h2.x + b2.halfWidth) -
+                    Math.max(h1.x - b1.halfWidth, h2.x - b2.halfWidth);
+                const overlapY = Math.min(h1.y + b1.bottom, h2.y + b2.bottom) -
+                    Math.max(h1.y - b1.top, h2.y - b2.top);
 
-            const totalMass = Math.max(1e-6, h1.radius + h2.radius);
-            const horizontal = overlapX < overlapY;
-            const overlap = horizontal ? overlapX : overlapY;
-            const push = (overlap + 2) * 0.15 * Math.max(1e-3, dt) * 60;
-
-            const moveH1 = (fraction) => {
-                if (h1 === draggedHost) return;
-                if (horizontal) {
-                    const dir = Math.sign(h2.x - h1.x || 1);
-                    h1.x -= dir * push * fraction;
-                    h1.vx = (h1.vx || 0) - dir * push * fraction * 0.01;
-                } else {
-                    const dir = Math.sign(h2.y - h1.y || 1);
-                    h1.y -= dir * push * fraction;
-                    h1.vy = (h1.vy || 0) - dir * push * fraction * 0.01;
+                if (overlapX <= 0 || overlapY <= 0) {
+                    continue;
                 }
-            };
-            const moveH2 = (fraction) => {
-                if (h2 === draggedHost) return;
-                if (horizontal) {
-                    const dir = Math.sign(h2.x - h1.x || 1);
-                    h2.x += dir * push * fraction;
-                    h2.vx = (h2.vx || 0) + dir * push * fraction * 0.01;
-                } else {
-                    const dir = Math.sign(h2.y - h1.y || 1);
-                    h2.y += dir * push * fraction;
-                    h2.vy = (h2.vy || 0) + dir * push * fraction * 0.01;
-                }
-            };
 
-            if (h1 === draggedHost && h2 === draggedHost) {
-                continue;
-            } else if (h1 === draggedHost) {
-                moveH2(1);
-            } else if (h2 === draggedHost) {
-                moveH1(1);
-            } else {
-                moveH1(h2.radius / totalMass);
-                moveH2(h1.radius / totalMass);
+                const totalMass = Math.max(1e-6, h1.radius + h2.radius);
+                const horizontal = overlapX < overlapY;
+                const overlap = horizontal ? overlapX : overlapY;
+                const push = (overlap + 1.5) * stiffness;
+
+                if (h1 === draggedHost && h2 === draggedHost) {
+                    continue;
+                } else if (h1 === draggedHost) {
+                    if (horizontal) {
+                        const dir = Math.sign(h2.x - h1.x || 1);
+                        const disp = dir * push;
+                        h2.x += disp;
+                        maxDisp = Math.max(maxDisp, Math.abs(disp));
+                    } else {
+                        const dir = Math.sign(h2.y - h1.y || 1);
+                        const disp = dir * push;
+                        h2.y += disp;
+                        maxDisp = Math.max(maxDisp, Math.abs(disp));
+                    }
+                } else if (h2 === draggedHost) {
+                    if (horizontal) {
+                        const dir = Math.sign(h2.x - h1.x || 1);
+                        const disp = dir * push;
+                        h1.x -= disp;
+                        maxDisp = Math.max(maxDisp, Math.abs(disp));
+                    } else {
+                        const dir = Math.sign(h2.y - h1.y || 1);
+                        const disp = dir * push;
+                        h1.y -= disp;
+                        maxDisp = Math.max(maxDisp, Math.abs(disp));
+                    }
+                } else {
+                    if (horizontal) {
+                        const dir = Math.sign(h2.x - h1.x || 1);
+                        const disp1 = -dir * push * (h2.radius / totalMass);
+                        const disp2 = dir * push * (h1.radius / totalMass);
+                        h1.x += disp1;
+                        h2.x += disp2;
+                        maxDisp = Math.max(maxDisp, Math.abs(disp1), Math.abs(disp2));
+                    } else {
+                        const dir = Math.sign(h2.y - h1.y || 1);
+                        const disp1 = -dir * push * (h2.radius / totalMass);
+                        const disp2 = dir * push * (h1.radius / totalMass);
+                        h1.y += disp1;
+                        h2.y += disp2;
+                        maxDisp = Math.max(maxDisp, Math.abs(disp1), Math.abs(disp2));
+                    }
+                }
             }
         }
+        if (maxDisp < 0.5) break;
     }
     hostArrayDirty = true;
 }
