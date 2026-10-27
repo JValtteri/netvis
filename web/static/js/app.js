@@ -75,7 +75,7 @@ function fitToView() {
         maxY = Math.max(maxY, host.y + bounds.bottom);
     }
 
-    const padding = 40;
+    const padding = 40 * worldAreaScale;
     const spanX = Math.max(1, maxX - minX);
     const spanY = Math.max(1, maxY - minY);
     // Don't over-magnify a nearly empty graph; just centre it.
@@ -88,6 +88,15 @@ function fitToView() {
     camera.scale = scale;
     camera.offsetX = canvas.width / 2 - ((minX + maxX) / 2) * scale;
     camera.offsetY = canvas.height / 2 - ((minY + maxY) / 2) * scale;
+    needRedraw = true;
+}
+
+function expandWorldBounds() {
+    worldAreaScale *= WORLD_AREA_SCALE_STEP;
+    if (worldAreaScale > WORLD_AREA_SCALE_MAX) {
+        worldAreaScale = WORLD_AREA_SCALE_MAX;
+    }
+    worldBounds.enabled = true;
     needRedraw = true;
 }
 
@@ -120,16 +129,16 @@ function checkScreenFullAndAdjust() {
         const host = hostArray[i];
         const bounds = hostLabelBounds(host);
         // Consider host touching wall if it's very close to wall boundary
-        if (host.x - bounds.halfWidth <= worldLeftWall + 5) {
+        if (host.x - bounds.halfWidth <= worldLeftWall + 2) {
             touchingLeft = true;
         }
-        if (host.x + bounds.halfWidth >= worldRightWall - 5) {
+        if (host.x + bounds.halfWidth >= worldRightWall - 2) {
             touchingRight = true;
         }
-        if (host.y - bounds.top <= worldTopWall + 5) {
+        if (host.y - bounds.top <= worldTopWall + 2) {
             touchingTop = true;
         }
-        if (host.y + bounds.bottom >= worldBottomWall - 5) {
+        if (host.y + bounds.bottom >= worldBottomWall - 2) {
             touchingBottom = true;
         }
     }
@@ -139,13 +148,9 @@ function checkScreenFullAndAdjust() {
     const fullVertically = touchingTop && touchingBottom;
     
     if (fullHorizontally || fullVertically) {
-        // Resize visualization area and zoom out to fit
-        if (visualizationAreaScale < VISUALIZATION_AREA_SCALE_MAX) {
-            visualizationAreaScale *= VISUALIZATION_AREA_SCALE_STEP;
-            
-            // Zoom out to fit all hosts with more space
-            fitToViewExpanded();
-            needRedraw = true;
+        if (worldAreaScale < WORLD_AREA_SCALE_MAX) {
+            expandWorldBounds();
+            fitToView();
         }
     }
 }
@@ -191,6 +196,11 @@ let pressedHost = null;
 let pressX = 0;
 let pressY = 0;
 let dragMoved = false;
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+let panStartOffsetX = 0;
+let panStartOffsetY = 0;
 
 function hostAtPosition(pos) {
     ctx.font = '11px monospace';
@@ -277,12 +287,34 @@ canvas.addEventListener('mousedown', (e) => {
         host.vx = 0;
         host.vy = 0;
         needRedraw = true;
+        return;
     }
+    // Start panning if clicking empty space
+    isPanning = true;
+    dragMoved = false;
+    pressX = screen.x;
+    pressY = screen.y;
+    panStartX = screen.x;
+    panStartY = screen.y;
+    panStartOffsetX = camera.offsetX;
+    panStartOffsetY = camera.offsetY;
+    canvas.style.cursor = 'move';
+    needRedraw = true;
 });
 
 canvas.addEventListener('mousemove', (e) => {
     const screen = getMousePos(e);
     const pos = screenToWorld(screen);
+    if (isPanning && !draggedHost) {
+        if (Math.sqrt((screen.x - panStartX) ** 2 + (screen.y - panStartY) ** 2) > 4) {
+            dragMoved = true;
+        }
+        camera.offsetX = panStartOffsetX + (screen.x - panStartX);
+        camera.offsetY = panStartOffsetY + (screen.y - panStartY);
+        canvas.style.cursor = 'move';
+        needRedraw = true;
+        return;
+    }
     if (!draggedHost) {
         canvas.style.cursor = hostAtPosition(pos) ? 'grab' : 'default';
         return;
@@ -291,15 +323,11 @@ canvas.addEventListener('mousemove', (e) => {
         dragMoved = true;
     }
     canvas.style.cursor = 'grabbing';
-    // Clamp in world space to a reasonable area; use world bounds derived from screen
-    const baseMinX = draggedHost.radius + 60;
-    const baseMaxX = canvas.width - draggedHost.radius - 60;
-    const baseMinY = draggedHost.radius + 80;
-    const baseMaxY = canvas.height - draggedHost.radius - 80;
-    const worldMinX = ((baseMinX - camera.offsetX) / camera.scale) * (visualizationAreaScale === 1.0 ? 1.0 : visualizationAreaScale);
-    const worldMaxX = ((baseMaxX - camera.offsetX) / camera.scale) * (visualizationAreaScale === 1.0 ? 1.0 : visualizationAreaScale);
-    const worldMinY = ((baseMinY - camera.offsetY) / camera.scale) * (visualizationAreaScale === 1.0 ? 1.0 : visualizationAreaScale);
-    const worldMaxY = ((baseMaxY - camera.offsetY) / camera.scale) * (visualizationAreaScale === 1.0 ? 1.0 : visualizationAreaScale);
+    // Clamp in world space to fixed world bounds (walls independent of camera)
+    const worldMinX = 60 + draggedHost.radius;
+    const worldMaxX = 20000 - 60 - draggedHost.radius;
+    const worldMinY = 80 + draggedHost.radius;
+    const worldMaxY = 20000 - 80 - draggedHost.radius;
     draggedHost.x = clamp(pos.x - dragOffsetX, worldMinX, worldMaxX);
     draggedHost.y = clamp(pos.y - dragOffsetY, worldMinY, worldMaxY);
     needRedraw = true;
@@ -312,6 +340,7 @@ window.addEventListener('mouseup', () => {
     }
     pressedHost = null;
     draggedHost = null;
+    isPanning = false;
     canvas.style.cursor = 'default';
     needRedraw = true;
 });
@@ -325,9 +354,12 @@ canvas.addEventListener('wheel', (e) => {
     needRedraw = true;
 }, { passive: false });
 
-// Touch: one finger drags a host, two fingers pinch to zoom and pan.
+// Touch: one finger drags a host or pans, two fingers pinch to zoom and pan.
 let pinchState = null;
 let touchDragging = false;
+let touchPanning = false;
+let touchPanStart = { x: 0, y: 0 };
+let touchPanStartOffset = { x: 0, y: 0 };
 
 function touchPoints(e) {
     const rect = canvas.getBoundingClientRect();
@@ -341,10 +373,11 @@ canvas.addEventListener('touchstart', (e) => {
     const points = touchPoints(e);
     if (points.length >= 2) {
         e.preventDefault();
-        // A pinch supersedes any single-finger drag.
+        // A pinch supersedes any single-finger drag/pan.
         draggedHost = null;
         pressedHost = null;
         touchDragging = false;
+        touchPanning = false;
         dragMoved = false;
 
         const mid = {
@@ -366,6 +399,7 @@ canvas.addEventListener('touchstart', (e) => {
         const host = hostAtPosition(pos);
         if (host) {
             touchDragging = true;
+            touchPanning = false;
             draggedHost = host;
             pressedHost = host;
             dragMoved = false;
@@ -376,7 +410,17 @@ canvas.addEventListener('touchstart', (e) => {
             host.vx = 0;
             host.vy = 0;
             needRedraw = true;
+            return;
         }
+        // Pan with one finger on empty space
+        touchPanning = true;
+        touchDragging = false;
+        draggedHost = null;
+        pressedHost = null;
+        dragMoved = false;
+        touchPanStart = { x: points[0].x, y: points[0].y };
+        touchPanStartOffset = { x: camera.offsetX, y: camera.offsetY };
+        needRedraw = true;
     }
 }, { passive: false });
 
@@ -402,20 +446,27 @@ canvas.addEventListener('touchmove', (e) => {
         return;
     }
 
+    if (touchPanning && points.length === 1) {
+        e.preventDefault();
+        if (Math.hypot(points[0].x - touchPanStart.x, points[0].y - touchPanStart.y) > 4) {
+            dragMoved = true;
+        }
+        camera.offsetX = touchPanStartOffset.x + (points[0].x - touchPanStart.x);
+        camera.offsetY = touchPanStartOffset.y + (points[0].y - touchPanStart.y);
+        needRedraw = true;
+        return;
+    }
+
     if (touchDragging && draggedHost && points.length === 1) {
         e.preventDefault();
         if (Math.hypot(points[0].x - pressX, points[0].y - pressY) > 6) {
             dragMoved = true;
         }
         const pos = screenToWorld(points[0]);
-        const baseMinX = draggedHost.radius + 60;
-        const baseMaxX = canvas.width - draggedHost.radius - 60;
-        const baseMinY = draggedHost.radius + 80;
-        const baseMaxY = canvas.height - draggedHost.radius - 80;
-        const worldMinX = ((baseMinX - camera.offsetX) / camera.scale) * (visualizationAreaScale === 1.0 ? 1.0 : visualizationAreaScale);
-        const worldMaxX = ((baseMaxX - camera.offsetX) / camera.scale) * (visualizationAreaScale === 1.0 ? 1.0 : visualizationAreaScale);
-        const worldMinY = ((baseMinY - camera.offsetY) / camera.scale) * (visualizationAreaScale === 1.0 ? 1.0 : visualizationAreaScale);
-        const worldMaxY = ((baseMaxY - camera.offsetY) / camera.scale) * (visualizationAreaScale === 1.0 ? 1.0 : visualizationAreaScale);
+        const worldMinX = 60 + draggedHost.radius;
+        const worldMaxX = 20000 - 60 - draggedHost.radius;
+        const worldMinY = 80 + draggedHost.radius;
+        const worldMaxY = 20000 - 80 - draggedHost.radius;
         draggedHost.x = clamp(pos.x - dragOffsetX, worldMinX, worldMaxX);
         draggedHost.y = clamp(pos.y - dragOffsetY, worldMinY, worldMaxY);
         needRedraw = true;
@@ -428,8 +479,12 @@ function endTouch() {
             copyToClipboard(pressedHost.ip);
         }
     }
+    if (touchPanning && pressedHost && !dragMoved) {
+        // no host, just pan
+    }
     pinchState = null;
     touchDragging = false;
+    touchPanning = false;
     pressedHost = null;
     draggedHost = null;
     needRedraw = true;
@@ -554,10 +609,19 @@ let draggedHost = null;
 let dragOffsetX = 0;
 let dragOffsetY = 0;
 
-// Visualization area expansion - grows when screen becomes full
-let visualizationAreaScale = 1.0;
-const VISUALIZATION_AREA_SCALE_STEP = 1.25;
-const VISUALIZATION_AREA_SCALE_MAX = 4.0;
+// Visualization area/world bounds - expands when screen is full
+// World bounds define the allowed area hosts can move in (independent of camera view)
+let worldBounds = {
+    minX: -Infinity,
+    maxX: Infinity,
+    minY: -Infinity,
+    maxY: Infinity,
+    enabled: false
+};
+let baseWorldMargin = { left: 60, right: 60, top: 80, bottom: 80 };
+let worldAreaScale = 1.0;
+const WORLD_AREA_SCALE_STEP = 1.3;
+const WORLD_AREA_SCALE_MAX = 8.0;
 
 function edgeKey(src, dst) {
     return src + '->' + dst;
@@ -1273,6 +1337,11 @@ function runPhysics(stepDt) {
     const dragFactorVel = Math.exp(-dt / damp);
     const cDrag = Math.max(0, settings.constantDrag || 0);
     const cDragFactor = cDrag > 0 ? Math.exp(-cDrag * dt * 60) : 1;
+    // Walls are fixed in world space (independent of camera zoom/pan)
+    const wallLeft = 60;
+    const wallRight = 60;
+    const wallTop = 80;
+    const wallBottom = 80;
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
         if (host === draggedHost) continue;
@@ -1285,46 +1354,31 @@ function runPhysics(stepDt) {
         host.x += (host.vx || 0) * dt * 60;
         host.y += (host.vy || 0) * dt * 60;
         
-        const minX = host.radius + 60;
-        const maxX = canvas.width - host.radius - 60;
-        const minY = host.radius + 80;
-        const maxY = canvas.height - host.radius - 80;
-        // Allow hosts to move beyond original bounds when area is expanded
-        if (visualizationAreaScale === 1.0) {
-            if (host.x < minX) {
-                host.x = minX;
-                host.vx = -(host.vx || 0) * 0.6;
-            } else if (host.x > maxX) {
-                host.x = maxX;
-                host.vx = -(host.vx || 0) * 0.6;
-            }
-            if (host.y < minY) {
-                host.y = minY;
-                host.vy = -(host.vy || 0) * 0.6;
-            } else if (host.y > maxY) {
-                host.y = maxY;
-                host.vy = -(host.vy || 0) * 0.6;
-            }
-        } else {
-            // When expanded, use larger bounds
-            const expandedMinX = minX * visualizationAreaScale;
-            const expandedMaxX = maxX * visualizationAreaScale;
-            const expandedMinY = minY * visualizationAreaScale;
-            const expandedMaxY = maxY * visualizationAreaScale;
-            if (host.x < expandedMinX) {
-                host.x = expandedMinX;
-                host.vx = -(host.vx || 0) * 0.6;
-            } else if (host.x > expandedMaxX) {
-                host.x = expandedMaxX;
-                host.vx = -(host.vx || 0) * 0.6;
-            }
-            if (host.y < expandedMinY) {
-                host.y = expandedMinY;
-                host.vy = -(host.vy || 0) * 0.6;
-            } else if (host.y > expandedMaxY) {
-                host.y = expandedMaxY;
-                host.vy = -(host.vy || 0) * 0.6;
-            }
+        const minX = wallLeft + host.radius;
+        const maxX = 10000 - wallRight - host.radius; // large fixed world bounds
+        const minY = wallTop + host.radius;
+        const maxY = 10000 - wallBottom - host.radius;
+        // Actually use fixed world bounds - walls don't move with camera
+        const worldMinX = wallLeft + host.radius;
+        const worldMaxX = (canvas.width / camera.scale * 10) - wallRight - host.radius; // not ideal, better fixed
+        // Use fixed large bounds in world space
+        const fixedMinX = 0 + wallLeft + host.radius;
+        const fixedMaxX = 20000 - wallRight - host.radius;
+        const fixedMinY = 0 + wallTop + host.radius;
+        const fixedMaxY = 20000 - wallBottom - host.radius;
+        if (host.x < fixedMinX) {
+            host.x = fixedMinX;
+            host.vx = -(host.vx || 0) * 0.6;
+        } else if (host.x > fixedMaxX) {
+            host.x = fixedMaxX;
+            host.vx = -(host.vx || 0) * 0.6;
+        }
+        if (host.y < fixedMinY) {
+            host.y = fixedMinY;
+            host.vy = -(host.vy || 0) * 0.6;
+        } else if (host.y > fixedMaxY) {
+            host.y = fixedMaxY;
+            host.vy = -(host.vy || 0) * 0.6;
         }
     }
     
@@ -1440,7 +1494,7 @@ function animate() {
         needRedraw = false;
     }
 
-    // Check if screen is full and adjust visualization area
+    // Check if screen is full and adjust visualization area (walls independent of camera)
     if (didPhysics) {
         checkScreenFullAndAdjust();
     }
