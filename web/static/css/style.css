@@ -126,28 +126,61 @@ body {
 
 #menuPanel {
     margin-top: 8px;
-    width: 260px;
-    padding: 15px;
+    width: 280px;
+    max-height: calc(100vh - 80px);
     background: rgba(20, 20, 20, 0.92);
     color: #fff;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
     backdrop-filter: blur(10px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
 
 #menuPanel.hidden {
     display: none;
 }
 
-#menuPanel h2 {
+.menu-header {
+    padding: 12px 14px 8px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.menu-header h2 {
     font-size: 14px;
-    margin-bottom: 12px;
+    margin: 0;
     color: #4a90e2;
+}
+
+.menu-scroll {
+    overflow-y: auto;
+    overflow-x: hidden;
+    max-height: calc(100vh - 130px);
+    padding: 4px 0;
+}
+
+.menu-group {
+    padding: 10px 14px 12px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.menu-group:last-child {
+    border-bottom: none;
+}
+
+.menu-group-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #aaa;
 }
 
 .slider-row {
     display: block;
-    margin-bottom: 12px;
     font-size: 11px;
     color: #ccc;
 }
@@ -190,7 +223,6 @@ body {
 #removePassive {
     width: 100%;
     padding: 8px;
-    margin-top: 8px;
     font-size: 12px;
     color: #fff;
     background: rgba(231, 76, 60, 0.25);
