@@ -738,27 +738,54 @@ function countCrossingsForPoint(px, py) {
 
 function findBestHostPosition(connectedToIps) {
     const margin = 60;
-    // Try positions near the edge of canvas
     const candidates = [];
-    // Edge positions
+    
+    // If we know which host this will connect to, prefer edge closest to it
+    if (connectedToIps && connectedToIps.length > 0) {
+        for (const cip of connectedToIps) {
+            const ch = hosts.get(cip);
+            if (!ch) continue;
+            // Project from center toward ch, intersect with screen edge
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+            const dx = ch.x - cx;
+            const dy = ch.y - cy;
+            const len = Math.sqrt(dx*dx + dy*dy) || 1;
+            // Try to place near the edge in the direction of the connected host
+            // Find closest edge point
+            const tLeft = (margin - cx) / (dx / len);
+            const tRight = (canvas.width - margin - cx) / (dx / len);
+            const tTop = (margin - cy) / (dy / len);
+            const tBottom = (canvas.height - margin - cy) / (dy / len);
+            // Pick the smallest positive t that intersects an edge
+            const ts = [];
+            if (tLeft > 0 && Math.abs(cy + (dy/len)*tLeft) <= canvas.height) ts.push({t:tLeft, x:margin, y: cy + (dy/len)*tLeft});
+            if (tRight > 0 && Math.abs(cy + (dy/len)*tRight) <= canvas.height) ts.push({t:tRight, x:canvas.width-margin, y: cy + (dy/len)*tRight});
+            if (tTop > 0 && Math.abs(cx + (dx/len)*tTop) <= canvas.width) ts.push({t:tTop, x: cx + (dx/len)*tTop, y: margin});
+            if (tBottom > 0 && Math.abs(cx + (dx/len)*tBottom) <= canvas.width) ts.push({t:tBottom, x: cx + (dx/len)*tBottom, y: canvas.height-margin});
+            if (ts.length > 0) {
+                ts.sort((a,b) => a.t - b.t);
+                const pt = ts[0];
+                // Add candidates around this closest edge point
+                for (let da = -30; da <= 30; da += 10) {
+                    candidates.push({x: pt.x + da, y: pt.y});
+                    candidates.push({x: pt.x, y: pt.y + da});
+                }
+            }
+        }
+    }
+    
+    // Edge positions around the whole screen as fallback
     const steps = 20;
-    // Top edge
     for (let i = 0; i <= steps; i++) {
         candidates.push({x: (canvas.width * i) / steps, y: margin});
-    }
-    // Bottom edge
-    for (let i = 0; i <= steps; i++) {
         candidates.push({x: (canvas.width * i) / steps, y: canvas.height - margin});
     }
-    // Left edge
     for (let i = 1; i < steps; i++) {
         candidates.push({x: margin, y: (canvas.height * i) / steps});
-    }
-    // Right edge
-    for (let i = 1; i < steps; i++) {
         candidates.push({x: canvas.width - margin, y: (canvas.height * i) / steps});
     }
-    // Also add some random edge-biased positions
+    // Random edge-biased positions
     for (let i = 0; i < 40; i++) {
         const side = Math.floor(Math.random() * 4);
         if (side === 0) candidates.push({x: Math.random() * canvas.width, y: margin + Math.random() * 40});
@@ -772,8 +799,18 @@ function findBestHostPosition(connectedToIps) {
     
     for (const c of candidates) {
         const crossings = countCrossingsForPoint(c.x, c.y);
-        // Prefer edge positions (already biased) and penalize if too close to existing hosts
         let score = crossings * 1000;
+        if (connectedToIps && connectedToIps.length > 0) {
+            for (const cip of connectedToIps) {
+                const ch = hosts.get(cip);
+                if (ch) {
+                    const dx = ch.x - c.x;
+                    const dy = ch.y - c.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    score += dist * 0.1; // prefer closer to connected host
+                }
+            }
+        }
         for (const h of hosts.values()) {
             const dx = h.x - c.x;
             const dy = h.y - c.y;
@@ -911,8 +948,8 @@ function handleMessage(msg) {
         updateStats();
     } else if (msg.type === 'packet') {
         const ev = msg.data;
-        const srcHost = getHostPosition(ev.srcIP);
-        const dstHost = getHostPosition(ev.dstIP);
+        const srcHost = hosts.has(ev.srcIP) ? hosts.get(ev.srcIP) : (function(){ const p = findBestHostPosition([ev.dstIP]); hosts.set(ev.srcIP,{ip:ev.srcIP,hostname:'',x:p.x,y:p.y,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,radius:22,sentCount:0,receivedCount:0,bytesSent:0,bytesReceived:0,lastSentAt:0,lastActivityAt:Date.now(),glowLevel:0}); hostArrayDirty=true; needRedraw=true; updateHostSizes(); return hosts.get(ev.srcIP); })();
+        const dstHost = hosts.has(ev.dstIP) ? hosts.get(ev.dstIP) : (function(){ const p = findBestHostPosition([ev.srcIP]); hosts.set(ev.dstIP,{ip:ev.dstIP,hostname:'',x:p.x,y:p.y,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,radius:22,sentCount:0,receivedCount:0,bytesSent:0,bytesReceived:0,lastSentAt:0,lastActivityAt:Date.now(),glowLevel:0}); hostArrayDirty=true; needRedraw=true; updateHostSizes(); return hosts.get(ev.dstIP); })();
         const now = Date.now();
         srcHost.sentCount = (srcHost.sentCount || 0) + 1;
         dstHost.receivedCount = (dstHost.receivedCount || 0) + 1;
