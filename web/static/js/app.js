@@ -453,6 +453,7 @@ const settings = {
     attractLocalLocal: 0.100,
     attractLocalExternal: 0.660,
     attractExternalExternal: 0.020,
+    angleDistribution: 0.015,
     packetSpeed: 0.005,
     packetSizeScale: 0.3,
     minHostSize: 5,
@@ -478,6 +479,7 @@ function bindSlider(id, key, format, onChange) {
 bindSlider('attractLocalLocal', 'attractLocalLocal', (v) => v.toFixed(3));
 bindSlider('attractLocalExternal', 'attractLocalExternal', (v) => v.toFixed(3));
 bindSlider('attractExternalExternal', 'attractExternalExternal', (v) => v.toFixed(3));
+bindSlider('angleDistribution', 'angleDistribution', (v) => v.toFixed(3));
 bindSlider('packetSpeed', 'packetSpeed', (v) => v.toFixed(3));
 bindSlider('packetSize', 'packetSizeScale', (v) => v.toFixed(1));
 bindSlider('minHostSize', 'minHostSize', (v) => v.toFixed(0), () => updateHostSizes());
@@ -1009,6 +1011,58 @@ function runPhysics(stepDt) {
         if (dst !== draggedHost) {
             dst.x -= fx * (src.radius / totalMass) * 2;
             dst.y -= fy * (src.radius / totalMass) * 2;
+        }
+    }
+
+    // Distribute edges evenly spaced around hosts by angle
+    if (settings.angleDistribution > 0) {
+        for (let i = 0; i < hostArray.length; i++) {
+            const host = hostArray[i];
+            if (host === draggedHost) continue;
+            const neighbors = [];
+            for (const edge of edges.values()) {
+                if (edge.srcIP === host.ip) {
+                    const n = hosts.get(edge.dstIP);
+                    if (n && n !== host) neighbors.push({host: n, dir: 1});
+                } else if (edge.dstIP === host.ip) {
+                    const n = hosts.get(edge.srcIP);
+                    if (n && n !== host) neighbors.push({host: n, dir: -1});
+                }
+            }
+            if (neighbors.length < 2) continue;
+            // Compute current angles
+            const angles = neighbors.map((nb) => {
+                const dx = nb.host.x - host.x;
+                const dy = nb.host.y - host.y;
+                return Math.atan2(dy, dx);
+            });
+            // Sort by angle
+            const indices = neighbors.map((_, idx) => idx).sort((a,b) => angles[a] - angles[b]);
+            const n = neighbors.length;
+            const twoPi = Math.PI * 2;
+            const idealSep = twoPi / n;
+            // Try to spread each neighbor toward its ideal evenly-spaced position
+            for (let j = 0; j < indices.length; j++) {
+                const idx = indices[j];
+                const nb = neighbors[idx];
+                const currentAngle = angles[idx];
+                const idealAngle = indices.indexOf(idx) * idealSep - Math.PI; // start somewhere
+                // better to distribute around circle starting from current average
+                let diff = idealAngle - currentAngle;
+                while (diff > Math.PI) diff -= twoPi;
+                while (diff < -Math.PI) diff += twoPi;
+                // Apply tangential force to rotate neighbor around host
+                const dx = nb.host.x - host.x;
+                const dy = nb.host.y - host.y;
+                const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                const tx = -dy / dist; // perpendicular
+                const ty = dx / dist;
+                const forceMag = diff * settings.angleDistribution;
+                if (nb.host !== draggedHost) {
+                    nb.host.x += tx * forceMag * 10;
+                    nb.host.y += ty * forceMag * 10;
+                }
+            }
         }
     }
     
