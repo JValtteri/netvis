@@ -7,6 +7,21 @@ canvas.height = window.innerHeight;
 window.addEventListener('resize', () => {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
+    if (isMobileDevice()) {
+        setTimeout(() => fitToView(), 150);
+    }
+    needRedraw = true;
+});
+
+window.addEventListener('orientationchange', () => {
+    setTimeout(() => {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        if (isMobileDevice()) {
+            fitToView();
+        }
+        needRedraw = true;
+    }, 200);
 });
 
 function getMousePos(e) {
@@ -54,6 +69,12 @@ function zoomBy(factor) {
     zoomAt(canvas.width / 2, canvas.height / 2, factor);
 }
 
+function isMobileDevice() {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+           (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) ||
+           ('ontouchstart' in window && window.innerWidth <= 1024);
+}
+
 function fitToView() {
     const hostArray = Array.from(hosts.values());
     updateHostArrayCache();
@@ -75,20 +96,43 @@ function fitToView() {
         maxY = Math.max(maxY, host.y + bounds.bottom);
     }
 
-    const padding = 40;
+    const mobile = isMobileDevice();
+    // Account for UI overlays on mobile (info panel top-left, controls bottom-right)
+    const padding = mobile ? Math.max(60, Math.min(canvas.width, canvas.height) * 0.12) : 40;
+    const topOffset = mobile ? 80 : 0; // leave space for top info panel
+    const bottomOffset = mobile ? 80 : 0; // leave space for bottom controls
+    const leftOffset = mobile ? 20 : 0;
+    const rightOffset = mobile ? 20 : 0;
+    const availableWidth = Math.max(1, canvas.width - padding * 2 - leftOffset - rightOffset);
+    const availableHeight = Math.max(1, canvas.height - padding * 2 - topOffset - bottomOffset);
     const spanX = Math.max(1, maxX - minX);
     const spanY = Math.max(1, maxY - minY);
     // Don't over-magnify a nearly empty graph; just centre it.
     const scale = clamp(
-        Math.min((canvas.width - padding * 2) / spanX, (canvas.height - padding * 2) / spanY),
+        Math.min(availableWidth / spanX, availableHeight / spanY),
         camera.minScale,
-        Math.min(camera.maxScale, 2)
+        mobile ? Math.min(camera.maxScale, 1.5) : Math.min(camera.maxScale, 2)
     );
 
     camera.scale = scale;
-    camera.offsetX = canvas.width / 2 - ((minX + maxX) / 2) * scale;
-    camera.offsetY = canvas.height / 2 - ((minY + maxY) / 2) * scale;
+    camera.offsetX = (canvas.width / 2) - ((minX + maxX) / 2) * scale + (leftOffset - rightOffset) / 2;
+    camera.offsetY = (canvas.height / 2) - ((minY + maxY) / 2) * scale + (topOffset - bottomOffset) / 2;
     needRedraw = true;
+}
+
+let lastFitHostCount = 0;
+function autoFitIfNeeded() {
+    if (hosts.size === 0) return;
+    // Auto-fit when hosts appear or significantly increase (common on mobile)
+    if (hosts.size !== lastFitHostCount) {
+        lastFitHostCount = hosts.size;
+        // Use setTimeout to let positions settle a bit
+        setTimeout(() => {
+            if (isMobileDevice() || hosts.size <= 10) {
+                fitToView();
+            }
+        }, 100);
+    }
 }
 
 let pressedHost = null;
@@ -641,13 +685,99 @@ function updateHostSizes() {
     }
 }
 
+function countEdgeIntersections(x, y, testRadius) {
+    // Count how many existing edges pass near the candidate position
+    let crossings = 0;
+    const candidateBox = { x, y, r: testRadius + 30 };
+    for (const edge of edges.values()) {
+        const src = hosts.get(edge.srcIP);
+        const dst = hosts.get(edge.dstIP);
+        if (!src || !dst) continue;
+        if (src.ip === edge.srcIP && dst.x !== undefined) { /* ok */ }
+        // Distance from point (x,y) to line segment src-dst
+        const dist = distancePointToSegment(x, y, src.x, src.y, dst.x, dst.y);
+        if (dist < (testRadius + 40)) {
+            crossings++;
+        }
+    }
+    return crossings;
+}
+
+function distancePointToSegment(px, py, x1, y1, x2, y2) {
+    const A = px - x1;
+    const B = py - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+    const dot = A * C + B * D;
+    const len2 = C * C + D * D;
+    let param = -1;
+    if (len2 !== 0) {
+        param = dot / len2;
+    }
+    let xx, yy;
+    if (param < 0) {
+        xx = x1;
+        yy = y1;
+    } else if (param > 1) {
+        xx = x2;
+        yy = y2;
+    } else {
+        xx = x1 + param * C;
+        yy = y1 + param * D;
+    }
+    const dx = px - xx;
+    const dy = py - yy;
+    return Math.sqrt(dx * dx + dy * dy);
+}
+
+function findBestPlacement() {
+    // Try to find position with fewest edge crossings
+    const candidates = [];
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    // Try positions in a spiral around center and near existing clusters
+    for (let ring = 1; ring <= 8; ring++) {
+        const radius = ring * 80;
+        const steps = Math.max(8, ring * 6);
+        for (let i = 0; i < steps; i++) {
+            const angle = (i / steps) * Math.PI * 2;
+            const x = centerX + Math.cos(angle) * radius + (Math.random() - 0.5) * 40;
+            const y = centerY + Math.sin(angle) * radius + (Math.random() - 0.5) * 40;
+            const crossings = countEdgeIntersections(x, y, 22);
+            candidates.push({ x, y, crossings });
+        }
+    }
+    // Also try positions near existing hosts but spread out
+    if (hosts.size > 0) {
+        for (const host of hosts.values()) {
+            for (let i = 0; i < 6; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = host.radius + 150 + Math.random() * 100;
+                const x = host.x + Math.cos(angle) * dist;
+                const y = host.y + Math.sin(angle) * dist;
+                const crossings = countEdgeIntersections(x, y, 22);
+                candidates.push({ x, y, crossings });
+            }
+        }
+    }
+    if (candidates.length === 0) {
+        return { x: Math.random() * canvas.width, y: Math.random() * canvas.height };
+    }
+    candidates.sort((a, b) => a.crossings - b.crossings);
+    // Pick from the best few with some randomness
+    const best = candidates.slice(0, Math.min(5, candidates.length));
+    const chosen = best[Math.floor(Math.random() * best.length)];
+    return { x: chosen.x, y: chosen.y };
+}
+
 function getHostPosition(ip) {
     if (!hosts.has(ip)) {
+        const pos = findBestPlacement();
         hosts.set(ip, {
             ip: ip,
             hostname: '',
-            x: Math.random() * canvas.width,
-            y: Math.random() * canvas.height,
+            x: pos.x,
+            y: pos.y,
             vx: (Math.random() - 0.5) * 0.3,
             vy: (Math.random() - 0.5) * 0.3,
             radius: 22,
@@ -662,6 +792,7 @@ function getHostPosition(ip) {
         hostArrayDirty = true;
         needRedraw = true;
         updateHostSizes();
+        autoFitIfNeeded();
     }
     return hosts.get(ip);
 }
@@ -707,11 +838,12 @@ function handleMessage(msg) {
         if (data.hosts) {
             for (const h of data.hosts) {
                 if (!hosts.has(h.ip)) {
+                    const pos = findBestPlacement();
                     hosts.set(h.ip, {
                         ip: h.ip,
                         hostname: h.hostname,
-                        x: Math.random() * canvas.width,
-                        y: Math.random() * canvas.height,
+                        x: pos.x,
+                        y: pos.y,
                         vx: (Math.random() - 0.5) * 0.3,
                         vy: (Math.random() - 0.5) * 0.3,
                         radius: 22,
@@ -749,6 +881,13 @@ function handleMessage(msg) {
         }
         updateHostSizes();
         updateStats();
+        // Fit view on initial snapshot, especially important for mobile
+        setTimeout(() => {
+            fitToView();
+            lastFitHostCount = hosts.size;
+        }, 150);
+        autoFitIfNeeded();
+        autoFitIfNeeded();
     } else if (msg.type === 'host') {
         const info = msg.data;
         const host = hosts.get(info.ip);
@@ -869,24 +1008,31 @@ function runPhysics(stepDt) {
     }
     
     // Update host positions with drag
-    const dragFactor = Math.exp(-stepDt / 0.45);
+    const dragFactor = Math.exp(-stepDt / 0.15);
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
         if (host === draggedHost) continue;
 
-        host.vx = (host.vx || 0) * dragFactor;
-        host.vy = (host.vy || 0) * dragFactor;
-        if (Math.abs(host.vx) < 0.001) host.vx = 0;
-        if (Math.abs(host.vy) < 0.001) host.vy = 0;
+        host.vx = (host.vx || 0) * dragFactor * 0.9;
+        host.vy = (host.vy || 0) * dragFactor * 0.9;
+        // Stronger damping to prevent vibration
+        if (Math.abs(host.vx) < 0.01) host.vx *= 0.3;
+        if (Math.abs(host.vy) < 0.01) host.vy *= 0.3;
+        if (Math.abs(host.vx) < 0.0005) host.vx = 0;
+        if (Math.abs(host.vy) < 0.0005) host.vy = 0;
+        // Clamp velocities to prevent oscillation
+        const maxVel = 1.2;
+        if (Math.abs(host.vx) > maxVel) host.vx = Math.sign(host.vx) * maxVel;
+        if (Math.abs(host.vy) > maxVel) host.vy = Math.sign(host.vy) * maxVel;
 
         host.x += host.vx * stepDt * 60;
         host.y += host.vy * stepDt * 60;
         
         if (host.x < host.radius + 60 || host.x > canvas.width - host.radius - 60) {
-            host.vx = -(host.vx || 0);
+            host.vx = -(host.vx || 0) * 0.2;
         }
         if (host.y < host.radius + 80 || host.y > canvas.height - host.radius - 80) {
-            host.vy = -(host.vy || 0);
+            host.vy = -(host.vy || 0) * 0.2;
         }
         
         host.x = Math.max(host.radius + 60, Math.min(canvas.width - host.radius - 60, host.x));
@@ -924,36 +1070,132 @@ function runPhysics(stepDt) {
             const totalMass = h1.radius + h2.radius;
             const horizontal = overlapX < overlapY;
             const overlap = horizontal ? overlapX : overlapY;
-            const push = (overlap + 2) * 0.2;
+            const push = Math.min(overlap + 2, 8) * 0.15;
 
             const moveH1 = (fraction) => {
+                if (h1 === draggedHost) return;
                 if (horizontal) {
-                    h1.x -= Math.sign(h2.x - h1.x || 1) * push * fraction;
+                    h1.vx = (h1.vx || 0) - Math.sign(h2.x - h1.x || 1) * push * fraction * 0.5;
                 } else {
-                    h1.y -= Math.sign(h2.y - h1.y || 1) * push * fraction;
+                    h1.vy = (h1.vy || 0) - Math.sign(h2.y - h1.y || 1) * push * fraction * 0.5;
                 }
             };
             const moveH2 = (fraction) => {
+                if (h2 === draggedHost) return;
                 if (horizontal) {
-                    h2.x += Math.sign(h2.x - h1.x || 1) * push * fraction;
+                    h2.vx = (h2.vx || 0) + Math.sign(h2.x - h1.x || 1) * push * fraction * 0.5;
                 } else {
-                    h2.y += Math.sign(h2.y - h1.y || 1) * push * fraction;
+                    h2.vy = (h2.vy || 0) + Math.sign(h2.y - h1.y || 1) * push * fraction * 0.5;
                 }
             };
 
             if (h1 === draggedHost) {
                 if (h2 !== draggedHost) {
-                    moveH2(1);
+                    h2.vx = (h2.vx || 0) + Math.sign(h2.x - h1.x || 1) * push * 0.5;
+                    h2.vy = (h2.vy || 0) + Math.sign(h2.y - h1.y || 1) * push * 0.5;
                 }
             } else if (h2 === draggedHost) {
-                moveH1(1);
+                h1.vx = (h1.vx || 0) - Math.sign(h2.x - h1.x || 1) * push * 0.5;
+                h1.vy = (h1.vy || 0) - Math.sign(h2.y - h1.y || 1) * push * 0.5;
             } else {
                 moveH1(h2.radius / totalMass);
                 moveH2(h1.radius / totalMass);
             }
         }
     }
+    
+    // Edge-edge repulsion: push hosts apart when edges cross or run too close
+    const edgeList = Array.from(edges.values()).filter(e => !isFrontendTraffic(e.srcIP, e.dstIP));
+    for (let ei = 0; ei < edgeList.length; ei++) {
+        const e1 = edgeList[ei];
+        const s1 = hosts.get(e1.srcIP);
+        const t1 = hosts.get(e1.dstIP);
+        if (!s1 || !t1 || s1 === t1) continue;
+        for (let ej = ei + 1; ej < edgeList.length; ej++) {
+            const e2 = edgeList[ej];
+            const s2 = hosts.get(e2.srcIP);
+            const t2 = hosts.get(e2.dstIP);
+            if (!s2 || !t2 || s2 === t2) continue;
+            // Skip if edges share a node
+            if (s1 === s2 || s1 === t2 || t1 === s2 || t1 === t2) continue;
+            
+            // Check for intersection
+            const intersect = lineSegmentsIntersect(s1.x, s1.y, t1.x, t1.y, s2.x, s2.y, t2.x, t2.y);
+            if (intersect) {
+                const push = 0.8;
+                const moveHost = (h, dx, dy) => {
+                    if (h === draggedHost) return;
+                    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                    h.vx = (h.vx || 0) + (dx / len) * push;
+                    h.vy = (h.vy || 0) + (dy / len) * push;
+                };
+                const mid1x = (s1.x + t1.x) / 2, mid1y = (s1.y + t1.y) / 2;
+                const mid2x = (s2.x + t2.x) / 2, mid2y = (s2.y + t2.y) / 2;
+                moveHost(s1, mid1x - mid2x, mid1y - mid2y);
+                moveHost(t1, mid1x - mid2x, mid1y - mid2y);
+                moveHost(s2, mid2x - mid1x, mid2y - mid1y);
+                moveHost(t2, mid2x - mid1x, mid2y - mid1y);
+                continue;
+            }
+            
+            // Check distance between segments - if too close and roughly parallel, repel
+            const dist = segmentSegmentDistance(s1.x, s1.y, t1.x, t1.y, s2.x, s2.y, t2.x, t2.y);
+            if (dist < 25) {
+                const push = (25 - dist) * 0.015;
+                const n1x = -(t1.y - s1.y);
+                const n1y = t1.x - s1.x;
+                const len1 = Math.sqrt(n1x * n1x + n1y * n1y) || 1;
+                const n2x = -(t2.y - s2.y);
+                const n2y = t2.x - s2.x;
+                const len2 = Math.sqrt(n2x * n2x + n2y * n2y) || 1;
+                const repulse = (h, nx, ny, ln) => {
+                    if (h === draggedHost) return;
+                    h.vx = (h.vx || 0) + (nx / ln) * push;
+                    h.vy = (h.vy || 0) + (ny / ln) * push;
+                };
+                repulse(s1, n1x, n1y, len1);
+                repulse(t1, n1x, n1y, len1);
+                repulse(s2, n2x, n2y, len2);
+                repulse(t2, n2x, n2y, len2);
+            }
+        }
+    }
+    
     hostArrayDirty = true;
+}
+
+function lineSegmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4) {
+    const denom = ((y4-y3)*(x2-x1) - (x4-x3)*(y2-y1));
+    if (Math.abs(denom) < 1e-10) return false;
+    const ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / denom;
+    const ub = ((x2-x1)*(y1-y3) - (y2-y1)*(x1-x3)) / denom;
+    return (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1);
+}
+
+function closestPointOnSegment(px,py,x1,y1,x2,y2) {
+    const A = px-x1, B = py-y1;
+    const C = x2-x1, D = y2-y1;
+    const dot = A*C + B*D;
+    const len2 = C*C + D*D;
+    let param = -1;
+    if (len2 > 0) param = dot/len2;
+    let xx,yy;
+    if (param < 0) { xx=x1; yy=y1; }
+    else if (param > 1) { xx=x2; yy=y2; }
+    else { xx=x1+param*C; yy=y1+param*D; }
+    return {x:xx,y:yy};
+}
+
+function segmentSegmentDistance(x1,y1,x2,y2,x3,y3,x4,y4) {
+    const p1 = closestPointOnSegment(x3,y3,x1,y1,x2,y2);
+    const d1 = Math.hypot(x3-p1.x, y3-p1.y);
+    const p2 = closestPointOnSegment(x4,y4,x1,y1,x2,y2);
+    const d2 = Math.hypot(x4-p2.x, y4-p2.y);
+    const p3 = closestPointOnSegment(x1,y1,x3,y3,x4,y4);
+    const d3 = Math.hypot(x1-p3.x, y1-p3.y);
+    const p4 = closestPointOnSegment(x2,y2,x3,y3,x4,y4);
+    const d4 = Math.hypot(x2-p4.x, y2-p4.y);
+    return Math.min(d1,d2,d3,d4);
 }
 
 function animate() {
