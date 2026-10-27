@@ -641,13 +641,156 @@ function updateHostSizes() {
     }
 }
 
+function segmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4) {
+    const denom = (y4-y3)*(x2-x1) - (x4-x3)*(y2-y1);
+    if (Math.abs(denom) < 1e-10) return false;
+    const ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / denom;
+    const ub = ((x2-x1)*(y1-y3) - (y2-y1)*(x1-x3)) / denom;
+    if (ua > 1e-9 && ua < 1-1e-9 && ub > 1e-9 && ub < 1-1e-9) {
+        return true;
+    }
+    return false;
+}
+
+function countEdgeCrossingsAtPoint(px, py) {
+    let crossings = 0;
+    // A point at edge doesn't create crossings; we check if connecting through
+    // this point would intersect other edges - but easier: count how many
+    // existing edges would be intersected by lines from this point to potential
+    // connection points? Or more directly, count edge crossings near this point
+    // by checking intersections between edges and rays - but the requirement says
+    // "where the connection edges cross as few other edges as possible"
+    // So place so that new connections don't cross many existing edges.
+    // Count crossings between a hypothetical edge from this point to anywhere
+    // and existing edges - or just count existing edge crossings in the area.
+    // Try to minimize total crossings involving edges to/from this new host.
+    for (const edge of edges.values()) {
+        const src = hosts.get(edge.srcIP);
+        const dst = hosts.get(edge.dstIP);
+        if (!src || !dst) continue;
+        // Check if a line from (px,py) to src crosses any other edge, 
+        // or just count general edge crossings in vicinity
+        // Count how many existing edges this potential position would intersect
+        // with connections to other hosts - approximate by checking intersection
+        // with all existing edges (excluding edges incident to this hypothetical host)
+        if (segmentsIntersect(px, py, src.x, src.y, dst.x, dst.y, src.x, src.y)) continue;
+    }
+    // Better approach: count how many existing edges are intersected by
+    // the shortest path/line to place it - alternatively count total number
+    // of edge-edge intersections in the neighborhood weighted toward edges
+    for (const edge of edges.values()) {
+        const src = hosts.get(edge.srcIP);
+        const dst = hosts.get(edge.dstIP);
+        if (!src || !dst) continue;
+        // Check intersection of edges that might connect to this point
+        // Count if placing here would create crossings with existing edges
+        // A simple heuristic: count how many existing edges pass near and intersect
+        for (const edge2 of edges.values()) {
+            if (edge === edge2) continue;
+            const s2 = hosts.get(edge2.srcIP);
+            const t2 = hosts.get(edge2.dstIP);
+            if (!s2 || !t2) continue;
+            if (segmentsIntersect(src.x, src.y, dst.x, dst.y, s2.x, s2.y, t2.x, t2.y)) {
+                crossings++;
+            }
+        }
+    }
+    // Actually want to minimize crossings of connections FROM this new host
+    // to its neighbors. But at placement time, we don't know neighbors yet.
+    // Or look up - maybe place near edge and minimize crossings of edges in general area?
+    // The requirement says "prefer locations near the edge, where the connection edges cross as few other edges as possible"
+    // So overall minimize edge crossings in the graph layout? Or for the new host's connections?
+    // Try to place the new host so that its edges (when added) cross few others.
+    // So find position (near edge) that has fewest intersections between
+    // potential edges from this point to existing hosts and other existing edges.
+    return crossings;
+}
+
+function countCrossingsForPoint(px, py) {
+    let crossings = 0;
+    // Check intersections between hypothetical edges from (px,py) to every existing host
+    // and all existing edges
+    for (const other of hosts.values()) {
+        for (const edge of edges.values()) {
+            const src = hosts.get(edge.srcIP);
+            const dst = hosts.get(edge.dstIP);
+            if (!src || !dst) continue;
+            // Don't count if the existing edge involves 'other'? 
+            if ((edge.srcIP === other.ip && edge.dstIP === other.ip)) continue;
+            if (edge.srcIP === other.ip || edge.dstIP === other.ip) {
+                // Connecting to other means this would be a parallel-ish connection to an endpoint of existing edge?
+                // Skip counting as crossing if it shares endpoint
+                continue;
+            }
+            if (segmentsIntersect(px, py, other.x, other.y, src.x, src.y, dst.x, dst.y)) {
+                crossings++;
+            }
+        }
+    }
+    return crossings;
+}
+
+function findBestHostPosition(connectedToIps) {
+    const margin = 60;
+    // Try positions near the edge of canvas
+    const candidates = [];
+    // Edge positions
+    const steps = 20;
+    // Top edge
+    for (let i = 0; i <= steps; i++) {
+        candidates.push({x: (canvas.width * i) / steps, y: margin});
+    }
+    // Bottom edge
+    for (let i = 0; i <= steps; i++) {
+        candidates.push({x: (canvas.width * i) / steps, y: canvas.height - margin});
+    }
+    // Left edge
+    for (let i = 1; i < steps; i++) {
+        candidates.push({x: margin, y: (canvas.height * i) / steps});
+    }
+    // Right edge
+    for (let i = 1; i < steps; i++) {
+        candidates.push({x: canvas.width - margin, y: (canvas.height * i) / steps});
+    }
+    // Also add some random edge-biased positions
+    for (let i = 0; i < 40; i++) {
+        const side = Math.floor(Math.random() * 4);
+        if (side === 0) candidates.push({x: Math.random() * canvas.width, y: margin + Math.random() * 40});
+        else if (side === 1) candidates.push({x: Math.random() * canvas.width, y: canvas.height - margin - Math.random() * 40});
+        else if (side === 2) candidates.push({x: margin + Math.random() * 40, y: Math.random() * canvas.height});
+        else candidates.push({x: canvas.width - margin - Math.random() * 40, y: Math.random() * canvas.height});
+    }
+    
+    let best = candidates[0] || {x: margin, y: margin};
+    let bestScore = Infinity;
+    
+    for (const c of candidates) {
+        const crossings = countCrossingsForPoint(c.x, c.y);
+        // Prefer edge positions (already biased) and penalize if too close to existing hosts
+        let score = crossings * 1000;
+        for (const h of hosts.values()) {
+            const dx = h.x - c.x;
+            const dy = h.y - c.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < 80) score += (80 - dist) * 10;
+        }
+        if (score < bestScore) {
+            bestScore = score;
+            best = c;
+        }
+    }
+    return best;
+}
+
 function getHostPosition(ip) {
     if (!hosts.has(ip)) {
+        // Try to place near edge with fewest edge crossings
+        const pos = findBestHostPosition([]);
         hosts.set(ip, {
             ip: ip,
             hostname: '',
-            x: Math.random() * canvas.width,
-            y: Math.random() * canvas.height,
+            x: pos.x,
+            y: pos.y,
             vx: (Math.random() - 0.5) * 0.3,
             vy: (Math.random() - 0.5) * 0.3,
             radius: 22,
@@ -707,11 +850,12 @@ function handleMessage(msg) {
         if (data.hosts) {
             for (const h of data.hosts) {
                 if (!hosts.has(h.ip)) {
+                    const pos = findBestHostPosition([]);
                     hosts.set(h.ip, {
                         ip: h.ip,
                         hostname: h.hostname,
-                        x: Math.random() * canvas.width,
-                        y: Math.random() * canvas.height,
+                        x: pos.x,
+                        y: pos.y,
                         vx: (Math.random() - 0.5) * 0.3,
                         vy: (Math.random() - 0.5) * 0.3,
                         radius: 22,
