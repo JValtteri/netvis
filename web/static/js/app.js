@@ -455,6 +455,7 @@ const settings = {
     attractExternalExternal: 0.020,
     angleDistribution: 0.015,
     dampening: 0.25,
+    constantDrag: 0.05,
     packetSpeed: 0.005,
     packetSizeScale: 0.3,
     minHostSize: 5,
@@ -482,6 +483,7 @@ bindSlider('attractLocalExternal', 'attractLocalExternal', (v) => v.toFixed(3));
 bindSlider('attractExternalExternal', 'attractExternalExternal', (v) => v.toFixed(3));
 bindSlider('angleDistribution', 'angleDistribution', (v) => v.toFixed(3));
 bindSlider('dampening', 'dampening', (v) => v.toFixed(2));
+bindSlider('constantDrag', 'constantDrag', (v) => v.toFixed(3));
 bindSlider('packetSpeed', 'packetSpeed', (v) => v.toFixed(3));
 bindSlider('packetSize', 'packetSizeScale', (v) => v.toFixed(1));
 bindSlider('minHostSize', 'minHostSize', (v) => v.toFixed(0), () => updateHostSizes());
@@ -1070,14 +1072,19 @@ function runPhysics(stepDt) {
     
     // Update host positions with drag
     const dragFactor = Math.exp(-stepDt / Math.max(0.01, settings.dampening || 0.25));
+    const cDrag = Math.max(0, settings.constantDrag || 0);
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
         if (host === draggedHost) continue;
 
         host.vx = (host.vx || 0) * dragFactor;
         host.vy = (host.vy || 0) * dragFactor;
-        if (Math.abs(host.vx) < 0.001) host.vx = 0;
-        if (Math.abs(host.vy) < 0.001) host.vy = 0;
+        if (cDrag > 0) {
+            host.vx *= Math.exp(-cDrag * stepDt * 60);
+            host.vy *= Math.exp(-cDrag * stepDt * 60);
+        }
+        if (Math.abs(host.vx) < 0.0005) host.vx = 0;
+        if (Math.abs(host.vy) < 0.0005) host.vy = 0;
 
         host.x += host.vx * stepDt * 60;
         host.y += host.vy * stepDt * 60;
