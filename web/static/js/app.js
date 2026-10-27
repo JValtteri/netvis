@@ -195,8 +195,13 @@ canvas.addEventListener('mousemove', (e) => {
         dragMoved = true;
     }
     canvas.style.cursor = 'grabbing';
-    draggedHost.x = clamp(pos.x - dragOffsetX, draggedHost.radius, canvas.width - draggedHost.radius);
-    draggedHost.y = clamp(pos.y - dragOffsetY, draggedHost.radius, canvas.height - draggedHost.radius);
+    // Clamp in world space to a reasonable area; use world bounds derived from screen
+    const worldMinX = (draggedHost.radius + 60 - camera.offsetX) / camera.scale;
+    const worldMaxX = (canvas.width - draggedHost.radius - 60 - camera.offsetX) / camera.scale;
+    const worldMinY = (draggedHost.radius + 80 - camera.offsetY) / camera.scale;
+    const worldMaxY = (canvas.height - draggedHost.radius - 80 - camera.offsetY) / camera.scale;
+    draggedHost.x = clamp(pos.x - dragOffsetX, worldMinX, worldMaxX);
+    draggedHost.y = clamp(pos.y - dragOffsetY, worldMinY, worldMaxY);
     needRedraw = true;
 });
 
@@ -303,8 +308,12 @@ canvas.addEventListener('touchmove', (e) => {
             dragMoved = true;
         }
         const pos = screenToWorld(points[0]);
-        draggedHost.x = clamp(pos.x - dragOffsetX, draggedHost.radius, canvas.width - draggedHost.radius);
-        draggedHost.y = clamp(pos.y - dragOffsetY, draggedHost.radius, canvas.height - draggedHost.radius);
+        const worldMinX = (draggedHost.radius + 60 - camera.offsetX) / camera.scale;
+        const worldMaxX = (canvas.width - draggedHost.radius - 60 - camera.offsetX) / camera.scale;
+        const worldMinY = (draggedHost.radius + 80 - camera.offsetY) / camera.scale;
+        const worldMaxY = (canvas.height - draggedHost.radius - 80 - camera.offsetY) / camera.scale;
+        draggedHost.x = clamp(pos.x - dragOffsetX, worldMinX, worldMaxX);
+        draggedHost.y = clamp(pos.y - dragOffsetY, worldMinY, worldMaxY);
         needRedraw = true;
     }
 }, { passive: false });
@@ -1016,8 +1025,9 @@ const PHYSICS_STEP = 1 / 30; // Throttle physics to 30Hz
 function runPhysics(stepDt) {
     updateHostArrayCache();
     const hostArray = hostArrayCache;
+    const dt = Math.max(1e-6, stepDt);
     
-    // Attraction force along connections.
+    // Attraction force along connections (spring-like, dt-scaled).
     for (const edge of edges.values()) {
         const src = hosts.get(edge.srcIP);
         const dst = hosts.get(edge.dstIP);
@@ -1036,27 +1046,27 @@ function runPhysics(stepDt) {
         
         const dx = dst.x - src.x;
         const dy = dst.y - src.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1e-6;
         const targetDist = src.radius + dst.radius + 90;
-        let force = (dist - targetDist) * strength * 0.02;
-        force = Math.max(-1.5, Math.min(1.5, force));
+        // Spring force: k*(dist - rest), scaled by dt and strength
+        const force = (dist - targetDist) * strength * 0.6 * dt;
         
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         
-        const totalMass = src.radius + dst.radius;
+        const totalMass = Math.max(1e-6, src.radius + dst.radius);
         if (src !== draggedHost) {
-            src.x += fx * (dst.radius / totalMass) * 2;
-            src.y += fy * (dst.radius / totalMass) * 2;
+            src.vx = (src.vx || 0) + fx * (dst.radius / totalMass);
+            src.vy = (src.vy || 0) + fy * (dst.radius / totalMass);
         }
         if (dst !== draggedHost) {
-            dst.x -= fx * (src.radius / totalMass) * 2;
-            dst.y -= fy * (src.radius / totalMass) * 2;
+            dst.vx = (dst.vx || 0) - fx * (src.radius / totalMass);
+            dst.vy = (dst.vy || 0) - fy * (src.radius / totalMass);
         }
     }
 
     // Distribute edges evenly spaced around hosts by angle
-    if (settings.angleDistribution > 0) {
+    if (settings.angleDistribution > 0 && dt > 0) {
         for (let i = 0; i < hostArray.length; i++) {
             const host = hostArray[i];
             if (host === draggedHost) continue;
@@ -1064,77 +1074,101 @@ function runPhysics(stepDt) {
             for (const edge of edges.values()) {
                 if (edge.srcIP === host.ip) {
                     const n = hosts.get(edge.dstIP);
-                    if (n && n !== host) neighbors.push({host: n, dir: 1});
+                    if (n && n !== host) neighbors.push({host: n});
                 } else if (edge.dstIP === host.ip) {
                     const n = hosts.get(edge.srcIP);
-                    if (n && n !== host) neighbors.push({host: n, dir: -1});
+                    if (n && n !== host) neighbors.push({host: n});
                 }
             }
             if (neighbors.length < 2) continue;
+            const n = neighbors.length;
+            const twoPi = Math.PI * 2;
+            const idealSep = twoPi / n;
             // Compute current angles
-            const angles = neighbors.map((nb) => {
+            const neighborAngles = neighbors.map((nb) => {
                 const dx = nb.host.x - host.x;
                 const dy = nb.host.y - host.y;
                 return Math.atan2(dy, dx);
             });
-            // Sort by angle
-            const indices = neighbors.map((_, idx) => idx).sort((a,b) => angles[a] - angles[b]);
-            const n = neighbors.length;
-            const twoPi = Math.PI * 2;
-            const idealSep = twoPi / n;
-            // Try to spread each neighbor toward its ideal evenly-spaced position
-            for (let j = 0; j < indices.length; j++) {
-                const idx = indices[j];
-                const nb = neighbors[idx];
-                const currentAngle = angles[idx];
-                const idealAngle = indices.indexOf(idx) * idealSep - Math.PI; // start somewhere
-                // better to distribute around circle starting from current average
-                let diff = idealAngle - currentAngle;
+            // Generate ideal angles starting from average current angle for stability
+            let avgAngle = 0;
+            for (let a = 0; a < neighborAngles.length; a++) avgAngle += neighborAngles[a];
+            avgAngle = avgAngle / neighborAngles.length;
+            const idealAngles = [];
+            for (let j = 0; j < n; j++) {
+                idealAngles.push(avgAngle + j * idealSep);
+            }
+            // Assign each neighbor to nearest ideal slot
+            const used = new Array(n).fill(false);
+            for (let ni = 0; ni < neighbors.length; ni++) {
+                let bestSlot = -1;
+                let bestDiff = Infinity;
+                const cur = neighborAngles[ni];
+                for (let si = 0; si < n; si++) {
+                    if (used[si]) continue;
+                    let diff = idealAngles[si] - cur;
+                    while (diff > Math.PI) diff -= twoPi;
+                    while (diff < -Math.PI) diff += twoPi;
+                    if (Math.abs(diff) < bestDiff) {
+                        bestDiff = Math.abs(diff);
+                        bestSlot = si;
+                        if (bestDiff < 1e-6) break;
+                    }
+                }
+                if (bestSlot === -1) continue;
+                used[bestSlot] = true;
+                let diff = idealAngles[bestSlot] - cur;
                 while (diff > Math.PI) diff -= twoPi;
                 while (diff < -Math.PI) diff += twoPi;
-                // Apply tangential force to rotate neighbor around host
-                const dx = nb.host.x - host.x;
-                const dy = nb.host.y - host.y;
-                const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-                const tx = -dy / dist; // perpendicular
-                const ty = dx / dist;
-                const forceMag = diff * settings.angleDistribution;
-                if (nb.host !== draggedHost) {
-                    nb.host.x += tx * forceMag * 10;
-                    nb.host.y += ty * forceMag * 10;
-                }
+                const nb = neighbors[ni];
+                if (nb.host === draggedHost) continue;
+                const dxn = nb.host.x - host.x;
+                const dyn = nb.host.y - host.y;
+                const distn = Math.sqrt(dxn * dxn + dyn * dyn) || 1;
+                const tx = -dyn / distn;
+                const ty = dxn / distn;
+                const forceMag = diff * settings.angleDistribution * 8 * dt;
+                nb.host.vx = (nb.host.vx || 0) + tx * forceMag;
+                nb.host.vy = (nb.host.vy || 0) + ty * forceMag;
             }
         }
     }
     
-    // Update host positions with drag
-    const dragFactor = Math.exp(-stepDt / Math.max(0.01, settings.dampening || 0.25));
+    // Update host positions with drag (semi-implicit Euler, dt in seconds)
+    const damp = Math.max(1e-6, settings.dampening || 0.25);
+    const dragFactorVel = Math.exp(-dt / damp);
     const cDrag = Math.max(0, settings.constantDrag || 0);
+    const cDragFactor = cDrag > 0 ? Math.exp(-cDrag * dt * 60) : 1;
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
         if (host === draggedHost) continue;
 
-        host.vx = (host.vx || 0) * dragFactor;
-        host.vy = (host.vy || 0) * dragFactor;
-        if (cDrag > 0) {
-            host.vx *= Math.exp(-cDrag * stepDt * 60);
-            host.vy *= Math.exp(-cDrag * stepDt * 60);
-        }
+        host.vx = (host.vx || 0) * dragFactorVel * cDragFactor;
+        host.vy = (host.vy || 0) * dragFactorVel * cDragFactor;
         if (Math.abs(host.vx) < 0.0005) host.vx = 0;
         if (Math.abs(host.vy) < 0.0005) host.vy = 0;
 
-        host.x += host.vx * stepDt * 60;
-        host.y += host.vy * stepDt * 60;
+        host.x += (host.vx || 0) * dt * 60;
+        host.y += (host.vy || 0) * dt * 60;
         
-        if (host.x < host.radius + 60 || host.x > canvas.width - host.radius - 60) {
-            host.vx = -(host.vx || 0);
+        const minX = host.radius + 60;
+        const maxX = canvas.width - host.radius - 60;
+        const minY = host.radius + 80;
+        const maxY = canvas.height - host.radius - 80;
+        if (host.x < minX) {
+            host.x = minX;
+            host.vx = -(host.vx || 0) * 0.6;
+        } else if (host.x > maxX) {
+            host.x = maxX;
+            host.vx = -(host.vx || 0) * 0.6;
         }
-        if (host.y < host.radius + 80 || host.y > canvas.height - host.radius - 80) {
-            host.vy = -(host.vy || 0);
+        if (host.y < minY) {
+            host.y = minY;
+            host.vy = -(host.vy || 0) * 0.6;
+        } else if (host.y > maxY) {
+            host.y = maxY;
+            host.vy = -(host.vy || 0) * 0.6;
         }
-        
-        host.x = Math.max(host.radius + 60, Math.min(canvas.width - host.radius - 60, host.x));
-        host.y = Math.max(host.radius + 80, Math.min(canvas.height - host.radius - 80, host.y));
     }
     
     // Soft label-aware repulsion using spatial indexing
@@ -1144,17 +1178,20 @@ function runPhysics(stepDt) {
     }
 
     rebuildSpatialGrid();
+    const processed = new Set();
     for (let i = 0; i < hostArray.length; i++) {
         const h1 = hostArray[i];
         const nearby = getNearbyHosts(h1);
         for (let k = 0; k < nearby.length; k++) {
             const h2 = nearby[k];
             if (h1 === h2) continue;
-            // Only process each pair once
-            if (hostArrayCache.indexOf(h2) > hostArrayCache.indexOf(h1)) continue;
+            const keyPair = h1 < h2 ? h1.ip + '|' + h2.ip : h2.ip + '|' + h1.ip;
+            if (processed.has(keyPair)) continue;
+            processed.add(keyPair);
             
             const b1 = hostBounds.get(h1);
             const b2 = hostBounds.get(h2);
+            if (!b1 || !b2) continue;
 
             const overlapX = Math.min(h1.x + b1.halfWidth, h2.x + b2.halfWidth) -
                 Math.max(h1.x - b1.halfWidth, h2.x - b2.halfWidth);
@@ -1165,30 +1202,40 @@ function runPhysics(stepDt) {
                 continue;
             }
 
-            const totalMass = h1.radius + h2.radius;
+            const totalMass = Math.max(1e-6, h1.radius + h2.radius);
             const horizontal = overlapX < overlapY;
             const overlap = horizontal ? overlapX : overlapY;
-            const push = (overlap + 2) * 0.2;
+            const push = (overlap + 2) * 0.15 * Math.max(1e-3, dt) * 60;
 
             const moveH1 = (fraction) => {
+                if (h1 === draggedHost) return;
                 if (horizontal) {
-                    h1.x -= Math.sign(h2.x - h1.x || 1) * push * fraction;
+                    const dir = Math.sign(h2.x - h1.x || 1);
+                    h1.x -= dir * push * fraction;
+                    h1.vx = (h1.vx || 0) - dir * push * fraction * 0.01;
                 } else {
-                    h1.y -= Math.sign(h2.y - h1.y || 1) * push * fraction;
+                    const dir = Math.sign(h2.y - h1.y || 1);
+                    h1.y -= dir * push * fraction;
+                    h1.vy = (h1.vy || 0) - dir * push * fraction * 0.01;
                 }
             };
             const moveH2 = (fraction) => {
+                if (h2 === draggedHost) return;
                 if (horizontal) {
-                    h2.x += Math.sign(h2.x - h1.x || 1) * push * fraction;
+                    const dir = Math.sign(h2.x - h1.x || 1);
+                    h2.x += dir * push * fraction;
+                    h2.vx = (h2.vx || 0) + dir * push * fraction * 0.01;
                 } else {
-                    h2.y += Math.sign(h2.y - h1.y || 1) * push * fraction;
+                    const dir = Math.sign(h2.y - h1.y || 1);
+                    h2.y += dir * push * fraction;
+                    h2.vy = (h2.vy || 0) + dir * push * fraction * 0.01;
                 }
             };
 
-            if (h1 === draggedHost) {
-                if (h2 !== draggedHost) {
-                    moveH2(1);
-                }
+            if (h1 === draggedHost && h2 === draggedHost) {
+                continue;
+            } else if (h1 === draggedHost) {
+                moveH2(1);
             } else if (h2 === draggedHost) {
                 moveH1(1);
             } else {
