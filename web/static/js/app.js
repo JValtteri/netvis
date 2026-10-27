@@ -6,14 +6,17 @@ const ctx = canvas.getContext('2d');
 function updateCanvasSize() {
     // Use visual viewport if available for better mobile support
     if (window.visualViewport) {
-        canvas.width = Math.floor(window.visualViewport.width);
-        canvas.height = Math.floor(window.visualViewport.height);
+        canvas.width = Math.floor(window.visualViewport.width * (window.devicePixelRatio || 1));
+        canvas.height = Math.floor(window.visualViewport.height * (window.devicePixelRatio || 1));
+        canvas.style.width = window.visualViewport.width + 'px';
+        canvas.style.height = window.visualViewport.height + 'px';
     } else {
-        canvas.width = Math.floor(window.innerWidth);
-        canvas.height = Math.floor(window.innerHeight);
+        canvas.width = Math.floor(window.innerWidth * (window.devicePixelRatio || 1));
+        canvas.height = Math.floor(window.innerHeight * (window.devicePixelRatio || 1));
+        canvas.style.width = window.innerWidth + 'px';
+        canvas.style.height = window.innerHeight + 'px';
     }
-    canvas.style.width = window.innerWidth + 'px';
-    canvas.style.height = window.innerHeight + 'px';
+    ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
 }
 
 updateCanvasSize();
@@ -22,8 +25,8 @@ window.addEventListener('resize', () => {
     updateCanvasSize();
     setTimeout(() => {
         fitToView();
-    }, 100);
-    needRedraw = true;
+        needRedraw = true;
+    }, 50);
 });
 
 if (window.visualViewport) {
@@ -31,8 +34,8 @@ if (window.visualViewport) {
         updateCanvasSize();
         setTimeout(() => {
             fitToView();
-        }, 100);
-        needRedraw = true;
+            needRedraw = true;
+        }, 50);
     });
     window.visualViewport.addEventListener('scroll', () => {
         // Prevent unwanted scroll on mobile
@@ -45,7 +48,7 @@ window.addEventListener('orientationchange', () => {
         updateCanvasSize();
         fitToView();
         needRedraw = true;
-    }, 300);
+    }, 200);
 });
 
 function getMousePos(e) {
@@ -131,16 +134,19 @@ function fitToView() {
     const availableHeight = Math.max(1, canvas.height - padding * 2 - topOffset - bottomOffset);
     const spanX = Math.max(1, maxX - minX);
     const spanY = Math.max(1, maxY - minY);
+    const dpr = window.devicePixelRatio || 1;
+    const viewWidth = (window.visualViewport ? window.visualViewport.width : window.innerWidth);
+    const viewHeight = (window.visualViewport ? window.visualViewport.height : window.innerHeight);
     // Don't over-magnify a nearly empty graph; just centre it.
     const scale = clamp(
         Math.min(availableWidth / spanX, availableHeight / spanY),
         camera.minScale,
-        mobile ? Math.min(camera.maxScale, 3) : Math.min(camera.maxScale, 2)
+        mobile ? Math.min(camera.maxScale, 4) : Math.min(camera.maxScale, 2)
     );
 
     camera.scale = scale;
-    camera.offsetX = (canvas.width / 2) - ((minX + maxX) / 2) * scale + (leftOffset - rightOffset) / 2;
-    camera.offsetY = (canvas.height / 2) - ((minY + maxY) / 2) * scale + (topOffset - bottomOffset) / 2;
+    camera.offsetX = (viewWidth / 2) - ((minX + maxX) / 2) * scale + (leftOffset - rightOffset) / 2;
+    camera.offsetY = (viewHeight / 2) - ((minY + maxY) / 2) * scale + (topOffset - bottomOffset) / 2;
     needRedraw = true;
 }
 
@@ -1045,21 +1051,19 @@ function runPhysics(stepDt) {
         }
     }
     
-    // Update host positions with drag
-    const dragFactor = Math.exp(-stepDt / 0.15);
+    // Update host positions with drag - very high damping to stop vibration
+    const dragFactor = Math.exp(-stepDt / 0.08);
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
         if (host === draggedHost) continue;
 
-        host.vx = (host.vx || 0) * dragFactor * 0.9;
-        host.vy = (host.vy || 0) * dragFactor * 0.9;
-        // Stronger damping to prevent vibration
-        if (Math.abs(host.vx) < 0.01) host.vx *= 0.3;
-        if (Math.abs(host.vy) < 0.01) host.vy *= 0.3;
-        if (Math.abs(host.vx) < 0.0005) host.vx = 0;
-        if (Math.abs(host.vy) < 0.0005) host.vy = 0;
+        host.vx = (host.vx || 0) * dragFactor;
+        host.vy = (host.vy || 0) * dragFactor;
+        // Kill small velocities immediately
+        if (Math.abs(host.vx) < 0.05) host.vx = 0;
+        if (Math.abs(host.vy) < 0.05) host.vy = 0;
         // Clamp velocities to prevent oscillation
-        const maxVel = 1.2;
+        const maxVel = 0.8;
         if (Math.abs(host.vx) > maxVel) host.vx = Math.sign(host.vx) * maxVel;
         if (Math.abs(host.vy) > maxVel) host.vy = Math.sign(host.vy) * maxVel;
 
@@ -1067,10 +1071,14 @@ function runPhysics(stepDt) {
         host.y += host.vy * stepDt * 60;
         
         if (host.x < host.radius + 60 || host.x > canvas.width - host.radius - 60) {
-            host.vx = -(host.vx || 0) * 0.2;
+            host.vx = 0;
+            if (host.x < host.radius + 60) host.x = host.radius + 60;
+            if (host.x > canvas.width - host.radius - 60) host.x = canvas.width - host.radius - 60;
         }
         if (host.y < host.radius + 80 || host.y > canvas.height - host.radius - 80) {
-            host.vy = -(host.vy || 0) * 0.2;
+            host.vy = 0;
+            if (host.y < host.radius + 80) host.y = host.radius + 80;
+            if (host.y > canvas.height - host.radius - 80) host.y = canvas.height - host.radius - 80;
         }
         
         host.x = Math.max(host.radius + 60, Math.min(canvas.width - host.radius - 60, host.x));
@@ -1108,44 +1116,30 @@ function runPhysics(stepDt) {
             const totalMass = h1.radius + h2.radius;
             const horizontal = overlapX < overlapY;
             const overlap = horizontal ? overlapX : overlapY;
-            const push = Math.min(overlap + 4, 12) * 0.4;
-
-            const moveH1 = (fraction) => {
-                if (h1 === draggedHost) return;
-                if (horizontal) {
-                    const dir = Math.sign(h2.x - h1.x) || 1;
-                    h1.vx = (h1.vx || 0) - dir * push * fraction * 1.2;
-                } else {
-                    const dir = Math.sign(h2.y - h1.y) || 1;
-                    h1.vy = (h1.vy || 0) - dir * push * fraction * 1.2;
-                }
-            };
-            const moveH2 = (fraction) => {
-                if (h2 === draggedHost) return;
-                if (horizontal) {
-                    const dir = Math.sign(h2.x - h1.x) || 1;
-                    h2.vx = (h2.vx || 0) + dir * push * fraction * 1.2;
-                } else {
-                    const dir = Math.sign(h2.y - h1.y) || 1;
-                    h2.vy = (h2.vy || 0) + dir * push * fraction * 1.2;
-                }
-            };
+            const push = Math.min(overlap + 6, 16) * 0.6;
 
             if (h1 === draggedHost) {
                 if (h2 !== draggedHost) {
                     const dirX = Math.sign(h2.x - h1.x) || 1;
                     const dirY = Math.sign(h2.y - h1.y) || 1;
-                    if (horizontal) h2.vx = (h2.vx || 0) + dirX * push * 1.5;
-                    else h2.vy = (h2.vy || 0) + dirY * push * 1.5;
+                    if (horizontal) h2.vx = (h2.vx || 0) + dirX * push;
+                    else h2.vy = (h2.vy || 0) + dirY * push;
                 }
             } else if (h2 === draggedHost) {
                 const dirX = Math.sign(h2.x - h1.x) || 1;
                 const dirY = Math.sign(h2.y - h1.y) || 1;
-                if (horizontal) h1.vx = (h1.vx || 0) - dirX * push * 1.5;
-                else h1.vy = (h1.vy || 0) - dirY * push * 1.5;
+                if (horizontal) h1.vx = (h1.vx || 0) - dirX * push;
+                else h1.vy = (h1.vy || 0) - dirY * push;
             } else {
-                moveH1(h2.radius / totalMass);
-                moveH2(h1.radius / totalMass);
+                const dirX = Math.sign(h2.x - h1.x) || 1;
+                const dirY = Math.sign(h2.y - h1.y) || 1;
+                if (horizontal) {
+                    h1.vx = (h1.vx || 0) - dirX * push * 0.5;
+                    h2.vx = (h2.vx || 0) + dirX * push * 0.5;
+                } else {
+                    h1.vy = (h1.vy || 0) - dirY * push * 0.5;
+                    h2.vy = (h2.vy || 0) + dirY * push * 0.5;
+                }
             }
         }
     }
@@ -1203,6 +1197,34 @@ function runPhysics(stepDt) {
                 repulse(t1, n1x, n1y, len1);
                 repulse(s2, n2x, n2y, len2);
                 repulse(t2, n2x, n2y, len2);
+            }
+        }
+    }
+    
+    // Hard separation pass to prevent blobs from overlapping
+    rebuildSpatialGrid();
+    for (let i = 0; i < hostArray.length; i++) {
+        const h1 = hostArray[i];
+        if (h1 === draggedHost) continue;
+        const b1 = hostBounds.get(h1);
+        const nearby = getNearbyHosts(h1);
+        for (let k = 0; k < nearby.length; k++) {
+            const h2 = nearby[k];
+            if (h2 === h1 || h2 === draggedHost) continue;
+            if (hostArrayCache.indexOf(h2) > hostArrayCache.indexOf(h1)) continue;
+            const b2 = hostBounds.get(h2);
+            const dist = Math.hypot(h1.x - h2.x, h1.y - h2.y);
+            const minDist = h1.radius + h2.radius + 5;
+            if (dist < minDist && dist > 0.0001) {
+                const push = (minDist - dist) / 2;
+                const dx = (h1.x - h2.x) / dist;
+                const dy = (h1.y - h2.y) / dist;
+                h1.x += dx * push;
+                h1.y += dy * push;
+                h2.x -= dx * push;
+                h2.y -= dy * push;
+                h1.vx = 0; h1.vy = 0;
+                h2.vx = 0; h2.vy = 0;
             }
         }
     }
@@ -1266,12 +1288,13 @@ function animate() {
         needRedraw = false;
     }
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
 
     // Draw the world through the camera transform.
-    ctx.setTransform(camera.scale, 0, 0, camera.scale, camera.offsetX, camera.offsetY);
+    ctx.setTransform(camera.scale * dpr, 0, 0, camera.scale * dpr, camera.offsetX * dpr, camera.offsetY * dpr);
 
     updateHostArrayCache();
     const hostArray = hostArrayCache;
