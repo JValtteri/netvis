@@ -6,32 +6,40 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"netvis/internal/capture"
 	"netvis/internal/graph"
 )
 
 type Hub struct {
-	clients    map[*Client]bool
-	broadcast  chan []byte
-	register   chan *Client
-	unregister chan *Client
-	g          *graph.Graph
-	serverIPs  []string
-	webPort    int
-	mu         sync.RWMutex
+	clients      map[*Client]bool
+	broadcast    chan []byte
+	register     chan *Client
+	unregister   chan *Client
+	batch        chan []byte
+	g            *graph.Graph
+	serverIPs    []string
+	webPort      int
+	mu           sync.RWMutex
+	batchMu      sync.Mutex
+	pendingBatch [][]byte
+	batchTimer   *time.Timer
 }
 
 func NewHub(g *graph.Graph, addr string) *Hub {
-	return &Hub{
-		clients:    make(map[*Client]bool),
-		broadcast:  make(chan []byte),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		g:          g,
-		serverIPs:  detectServerIPs(),
-		webPort:    extractPort(addr),
+	h := &Hub{
+		clients:      make(map[*Client]bool),
+		broadcast:    make(chan []byte),
+		register:     make(chan *Client),
+		unregister:   make(chan *Client),
+		batch:        make(chan []byte, 256),
+		g:            g,
+		serverIPs:    detectServerIPs(),
+		webPort:      extractPort(addr),
+		pendingBatch: make([][]byte, 0, 32),
 	}
+	return h
 }
 
 // extractPort parses the port from an address like ":8080", "0.0.0.0:8080", or "[::]:8080".
@@ -112,19 +120,80 @@ func (h *Hub) Run() {
 				close(c.send)
 			}
 			h.mu.Unlock()
-		case msg := <-h.broadcast:
-			h.mu.RLock()
-			for c := range h.clients {
-				select {
-				case c.send <- msg:
-				default:
-					close(c.send)
-					delete(h.clients, c)
-				}
+		case msg := <-h.batch:
+			h.batchMu.Lock()
+			h.pendingBatch = append(h.pendingBatch, append([]byte(nil), msg...))
+			if h.batchTimer == nil {
+				h.batchTimer = time.AfterFunc(16*time.Millisecond, func() {
+					h.flushBatch()
+				})
+			} else {
+				h.batchTimer.Stop()
+				h.batchTimer.Reset(16 * time.Millisecond)
 			}
-			h.mu.RUnlock()
+			h.batchMu.Unlock()
+		case msg := <-h.broadcast:
+			// Route through batching to reduce message overhead
+			select {
+			case h.batch <- msg:
+			default:
+				h.broadcastDirect(msg)
+			}
 		}
 	}
+}
+
+func (h *Hub) flushBatch() {
+	h.batchMu.Lock()
+	if len(h.pendingBatch) == 0 {
+		h.batchTimer = nil
+		h.batchMu.Unlock()
+		return
+	}
+	batch := h.pendingBatch
+	h.pendingBatch = make([][]byte, 0, 32)
+	h.batchTimer = nil
+	h.batchMu.Unlock()
+
+	if len(batch) == 1 {
+		h.broadcastDirect(batch[0])
+		return
+	}
+
+	payload := make([]map[string]json.RawMessage, 0, len(batch))
+	for _, b := range batch {
+		var m map[string]json.RawMessage
+		if json.Unmarshal(b, &m) == nil {
+			payload = append(payload, m)
+		}
+	}
+	if len(payload) == 0 {
+		return
+	}
+	wrapped, err := json.Marshal(map[string]interface{}{
+		"type": "batch",
+		"data": payload,
+	})
+	if err != nil {
+		for _, b := range batch {
+			h.broadcastDirect(b)
+		}
+		return
+	}
+	h.broadcastDirect(wrapped)
+}
+
+func (h *Hub) broadcastDirect(msg []byte) {
+	h.mu.RLock()
+	for c := range h.clients {
+		select {
+		case c.send <- msg:
+		default:
+			close(c.send)
+			delete(h.clients, c)
+		}
+	}
+	h.mu.RUnlock()
 }
 
 func (h *Hub) BroadcastEvent(ev capture.Event) {

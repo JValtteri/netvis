@@ -56,15 +56,18 @@ function zoomBy(factor) {
 
 function fitToView() {
     const hostArray = Array.from(hosts.values());
-    if (hostArray.length === 0) {
+    updateHostArrayCache();
+    if (hostArrayCache.length === 0) {
         camera.scale = 1;
         camera.offsetX = 0;
         camera.offsetY = 0;
+        needRedraw = true;
         return;
     }
 
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const host of hostArray) {
+    for (let i = 0; i < hostArrayCache.length; i++) {
+        const host = hostArrayCache[i];
         const bounds = hostLabelBounds(host);
         minX = Math.min(minX, host.x - bounds.halfWidth);
         maxX = Math.max(maxX, host.x + bounds.halfWidth);
@@ -85,6 +88,7 @@ function fitToView() {
     camera.scale = scale;
     camera.offsetX = canvas.width / 2 - ((minX + maxX) / 2) * scale;
     camera.offsetY = canvas.height / 2 - ((minY + maxY) / 2) * scale;
+    needRedraw = true;
 }
 
 let pressedHost = null;
@@ -176,6 +180,7 @@ canvas.addEventListener('mousedown', (e) => {
         dragOffsetY = pos.y - host.y;
         host.vx = 0;
         host.vy = 0;
+        needRedraw = true;
     }
 });
 
@@ -192,6 +197,7 @@ canvas.addEventListener('mousemove', (e) => {
     canvas.style.cursor = 'grabbing';
     draggedHost.x = clamp(pos.x - dragOffsetX, draggedHost.radius, canvas.width - draggedHost.radius);
     draggedHost.y = clamp(pos.y - dragOffsetY, draggedHost.radius, canvas.height - draggedHost.radius);
+    needRedraw = true;
 });
 
 window.addEventListener('mouseup', () => {
@@ -202,6 +208,7 @@ window.addEventListener('mouseup', () => {
     pressedHost = null;
     draggedHost = null;
     canvas.style.cursor = 'default';
+    needRedraw = true;
 });
 
 // Wheel zoom keeps the point under the cursor fixed.
@@ -210,6 +217,7 @@ canvas.addEventListener('wheel', (e) => {
     const rect = canvas.getBoundingClientRect();
     const factor = Math.exp(-e.deltaY * 0.0015);
     zoomAt(e.clientX - rect.left, e.clientY - rect.top, factor);
+    needRedraw = true;
 }, { passive: false });
 
 // Touch: one finger drags a host, two fingers pinch to zoom and pan.
@@ -262,6 +270,7 @@ canvas.addEventListener('touchstart', (e) => {
             dragOffsetY = pos.y - host.y;
             host.vx = 0;
             host.vy = 0;
+            needRedraw = true;
         }
     }
 }, { passive: false });
@@ -284,6 +293,7 @@ canvas.addEventListener('touchmove', (e) => {
         camera.scale = scale;
         camera.offsetX = mid.x - pinchState.worldMid.x * scale;
         camera.offsetY = mid.y - pinchState.worldMid.y * scale;
+        needRedraw = true;
         return;
     }
 
@@ -295,6 +305,7 @@ canvas.addEventListener('touchmove', (e) => {
         const pos = screenToWorld(points[0]);
         draggedHost.x = clamp(pos.x - dragOffsetX, draggedHost.radius, canvas.width - draggedHost.radius);
         draggedHost.y = clamp(pos.y - dragOffsetY, draggedHost.radius, canvas.height - draggedHost.radius);
+        needRedraw = true;
     }
 }, { passive: false });
 
@@ -308,6 +319,7 @@ function endTouch() {
     touchDragging = false;
     pressedHost = null;
     draggedHost = null;
+    needRedraw = true;
 }
 
 canvas.addEventListener('touchend', (e) => {
@@ -316,19 +328,72 @@ canvas.addEventListener('touchend', (e) => {
     } else if (e.touches.length === 1 && pinchState) {
         // Dropped to one finger; wait for a fresh gesture.
         pinchState = null;
+        needRedraw = true;
     }
 }, { passive: false });
 
 canvas.addEventListener('touchcancel', endTouch, { passive: false });
 
-document.getElementById('zoomIn').addEventListener('click', () => zoomBy(1.25));
-document.getElementById('zoomOut').addEventListener('click', () => zoomBy(1 / 1.25));
+document.getElementById('zoomIn').addEventListener('click', () => { zoomBy(1.25); needRedraw = true; });
+document.getElementById('zoomOut').addEventListener('click', () => { zoomBy(1 / 1.25); needRedraw = true; });
 document.getElementById('fitView').addEventListener('click', fitToView);
 
 const hosts = new Map();
 const edges = new Map();
 const particles = [];
 const serverIPs = new Set();
+
+// Cached host array - rebuilt only when hosts change
+let hostArrayCache = [];
+let hostArrayDirty = true;
+
+// Spatial indexing for collision detection
+const SPATIAL_CELL_SIZE = 200;
+const spatialGrid = new Map();
+
+function spatialKey(cx, cy) {
+    return cx + ',' + cy;
+}
+
+function rebuildSpatialGrid() {
+    spatialGrid.clear();
+    for (let i = 0; i < hostArrayCache.length; i++) {
+        const host = hostArrayCache[i];
+        const cx = Math.floor(host.x / SPATIAL_CELL_SIZE);
+        const cy = Math.floor(host.y / SPATIAL_CELL_SIZE);
+        const key = spatialKey(cx, cy);
+        if (!spatialGrid.has(key)) {
+            spatialGrid.set(key, []);
+        }
+        spatialGrid.get(key).push(host);
+    }
+}
+
+function getNearbyHosts(host) {
+    const cx = Math.floor(host.x / SPATIAL_CELL_SIZE);
+    const cy = Math.floor(host.y / SPATIAL_CELL_SIZE);
+    const nearby = [];
+    for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+            const key = spatialKey(cx + dx, cy + dy);
+            const cell = spatialGrid.get(key);
+            if (cell) {
+                for (let i = 0; i < cell.length; i++) {
+                    nearby.push(cell[i]);
+                }
+            }
+        }
+    }
+    return nearby;
+}
+
+function updateHostArrayCache() {
+    if (hostArrayDirty) {
+        hostArrayCache = Array.from(hosts.values());
+        hostArrayDirty = false;
+        rebuildSpatialGrid();
+    }
+}
 
 // Detect the web port from the current page location (no hardcoding).
 function getWebPort() {
@@ -472,6 +537,8 @@ function removeHosts(predicate) {
     if (draggedHost && removed.includes(draggedHost.ip)) {
         draggedHost = null;
     }
+    hostArrayDirty = true;
+    needRedraw = true;
     updateHostSizes();
     updateStats();
 }
@@ -592,6 +659,8 @@ function getHostPosition(ip) {
             lastActivityAt: Date.now(),
             glowLevel: 0
         });
+        hostArrayDirty = true;
+        needRedraw = true;
         updateHostSizes();
     }
     return hosts.get(ip);
@@ -600,7 +669,17 @@ function getHostPosition(ip) {
 const ws = new WebSocket(`ws://${window.location.host}/ws`);
 
 ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+    const raw = JSON.parse(event.data);
+    if (raw.type === 'batch' && Array.isArray(raw.data)) {
+        for (let i = 0; i < raw.data.length; i++) {
+            handleMessage(raw.data[i]);
+        }
+        return;
+    }
+    handleMessage(raw);
+};
+
+function handleMessage(msg) {
     
     if (msg.type === 'snapshot') {
         const data = msg.data;
@@ -644,6 +723,8 @@ ws.onmessage = (event) => {
                         lastActivityAt: Date.now(),
                         glowLevel: 0
                     });
+                    hostArrayDirty = true;
+                    needRedraw = true;
                 } else {
                     const host = hosts.get(h.ip);
                     host.hostname = h.hostname;
@@ -663,6 +744,7 @@ ws.onmessage = (event) => {
                     dstHost.receivedCount = (dstHost.receivedCount || 0) + (e.count || 0);
                     dstHost.bytesReceived = (dstHost.bytesReceived || 0) + (e.bytes || 0);
                 }
+                needRedraw = true;
             }
         }
         updateHostSizes();
@@ -671,7 +753,10 @@ ws.onmessage = (event) => {
         const info = msg.data;
         const host = hosts.get(info.ip);
         if (host) {
-            host.hostname = info.hostname;
+            if (host.hostname !== info.hostname) {
+                host.hostname = info.hostname;
+                needRedraw = true;
+            }
         }
         updateStats();
     } else if (msg.type === 'packet') {
@@ -686,6 +771,7 @@ ws.onmessage = (event) => {
         srcHost.lastSentAt = now;
         srcHost.lastActivityAt = now;
         dstHost.lastActivityAt = now;
+        needRedraw = true;
         updateHostSizes();
         
         const key = edgeKey(ev.srcIP, ev.dstIP);
@@ -720,11 +806,15 @@ ws.onmessage = (event) => {
                 color: protocolColors[ev.proto] || protocolColors.OTHER,
                 life: 1.0
             });
+            if (particles.length > 500) {
+                particles.shift();
+            }
         }
+        needRedraw = true;
         
         updateStats();
     }
-};
+}
 
 function updateStats() {
     hostCountEl.textContent = hosts.size;
@@ -732,24 +822,15 @@ function updateStats() {
 }
 
 let lastFrameTime = performance.now();
+let needRedraw = true;
+let physicsAccumulator = 0;
+const PHYSICS_STEP = 1 / 30; // Throttle physics to 30Hz
 
-function animate() {
-    const frameTime = performance.now();
-    const dt = Math.min((frameTime - lastFrameTime) / 1000, 0.1);
-    lastFrameTime = frameTime;
-
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw the world through the camera transform.
-    ctx.setTransform(camera.scale, 0, 0, camera.scale, camera.offsetX, camera.offsetY);
-
-    const hostArray = Array.from(hosts.values());
+function runPhysics(stepDt) {
+    updateHostArrayCache();
+    const hostArray = hostArrayCache;
     
     // Attraction force along connections.
-    // Local<->local connections pull strongest, local<->external medium,
-    // external<->external weakest.
     for (const edge of edges.values()) {
         const src = hosts.get(edge.srcIP);
         const dst = hosts.get(edge.dstIP);
@@ -776,7 +857,6 @@ function animate() {
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
         
-        // Mass is proportional to blob size: heavier hosts move less.
         const totalMass = src.radius + dst.radius;
         if (src !== draggedHost) {
             src.x += fx * (dst.radius / totalMass) * 2;
@@ -788,10 +868,8 @@ function animate() {
         }
     }
     
-    // Update host positions (gentle drift) with collision avoidance.
-    // Drag (friction) bleeds off velocity so blobs settle instead of
-    // creeping forward forever.
-    const dragFactor = Math.exp(-dt / 0.45);
+    // Update host positions with drag
+    const dragFactor = Math.exp(-stepDt / 0.45);
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
         if (host === draggedHost) continue;
@@ -801,8 +879,8 @@ function animate() {
         if (Math.abs(host.vx) < 0.001) host.vx = 0;
         if (Math.abs(host.vy) < 0.001) host.vy = 0;
 
-        host.x += host.vx * dt * 60;
-        host.y += host.vy * dt * 60;
+        host.x += host.vx * stepDt * 60;
+        host.y += host.vy * stepDt * 60;
         
         if (host.x < host.radius + 60 || host.x > canvas.width - host.radius - 60) {
             host.vx = -(host.vx || 0);
@@ -815,17 +893,22 @@ function animate() {
         host.y = Math.max(host.radius + 80, Math.min(canvas.height - host.radius - 80, host.y));
     }
     
-    // Soft label-aware repulsion: push apart blob+label bounding boxes so IPs
-    // and hostnames stay separated without acting as a hard collision.
+    // Soft label-aware repulsion using spatial indexing
     const hostBounds = new Map();
-    for (const host of hostArray) {
-        hostBounds.set(host, hostLabelBounds(host));
+    for (let i = 0; i < hostArray.length; i++) {
+        hostBounds.set(hostArray[i], hostLabelBounds(hostArray[i]));
     }
 
+    rebuildSpatialGrid();
     for (let i = 0; i < hostArray.length; i++) {
-        for (let j = i + 1; j < hostArray.length; j++) {
-            const h1 = hostArray[i];
-            const h2 = hostArray[j];
+        const h1 = hostArray[i];
+        const nearby = getNearbyHosts(h1);
+        for (let k = 0; k < nearby.length; k++) {
+            const h2 = nearby[k];
+            if (h1 === h2) continue;
+            // Only process each pair once
+            if (hostArrayCache.indexOf(h2) > hostArrayCache.indexOf(h1)) continue;
+            
             const b1 = hostBounds.get(h1);
             const b2 = hostBounds.get(h2);
 
@@ -838,8 +921,6 @@ function animate() {
                 continue;
             }
 
-            // Soft repulsion: resolve only part of the overlap per frame so
-            // labels separate gently instead of hard-colliding.
             const totalMass = h1.radius + h2.radius;
             const horizontal = overlapX < overlapY;
             const overlap = horizontal ? overlapX : overlapY;
@@ -872,6 +953,40 @@ function animate() {
             }
         }
     }
+    hostArrayDirty = true;
+}
+
+function animate() {
+    const frameTime = performance.now();
+    const dt = Math.min((frameTime - lastFrameTime) / 1000, 0.1);
+    lastFrameTime = frameTime;
+
+    physicsAccumulator += dt;
+    let didPhysics = false;
+    while (physicsAccumulator >= PHYSICS_STEP) {
+        physicsAccumulator -= PHYSICS_STEP;
+        didPhysics = true;
+        runPhysics(PHYSICS_STEP);
+    }
+
+    if (!needRedraw && !didPhysics && particles.length === 0 && hostArrayCache.length === 0) {
+        requestAnimationFrame(animate);
+        return;
+    }
+
+    if (didPhysics || needRedraw || particles.length > 0) {
+        needRedraw = false;
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw the world through the camera transform.
+    ctx.setTransform(camera.scale, 0, 0, camera.scale, camera.offsetX, camera.offsetY);
+
+    updateHostArrayCache();
+    const hostArray = hostArrayCache;
     
     // Draw edges. Regular connections are thin gray lines; only connections
     // that use the NetVis frontend are shown as a thin glowing yellow line.
@@ -1023,7 +1138,7 @@ function animate() {
             ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
             ctx.fillRect(host.x - hostnameWidth / 2 - 2, hostnameY - 10, hostnameWidth + 4, 12);
             ctx.fillStyle = hasSent ? '#fff' : '#aaa';
-            ctx.fillText(hostnameText, host.x, hostnameY);
+                ctx.fillText(hostnameText, host.x, hostnameY);
         }
     }
     

@@ -217,6 +217,12 @@ frontend, and integration steps below are complete.
 
 - [x] Add automated tests for capture parsing, graph aggregation, and hub
       behaviour.
+- [x] Redraw only when needed (dirty flags + idle skip).
+- [x] Batch WebSocket messages on the server (time-windowed batching with
+      fallback to direct send).
+- [x] Spatial indexing for collision detection (grid-based neighbor queries).
+- [x] Cache host arrays to avoid repeated allocations.
+- [x] Throttle physics updates to 30 Hz with accumulator.
 - [ ] Support VLAN/MPLS and improve IPv6 handling.
 - [ ] Rate-limit or aggregate events on very busy interfaces to control visual
       noise and CPU load.
@@ -224,3 +230,9 @@ frontend, and integration steps below are complete.
       worker pool for very large host sets.
 - [ ] Persist or replay capture sessions (pcap export/import).
 - [ ] Throttle controls for very busy graphs.
+- [ ] Cache text measurements for labels (avoid repeated `measureText` calls).
+- [ ] Object pooling for particles to reduce GC pressure.
+- [ ] Limit `frontendConnections` set size with TTL/LRU cleanup.
+- [ ] Use OffscreenCanvas/Web Worker for rendering on large graphs.
+- [ ] Consider WebGL renderer for improved performance with many hosts/particles.
+- [ ] Incremental spatial grid updates instead of full rebuilds each physics step.
