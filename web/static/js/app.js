@@ -108,18 +108,13 @@ function checkScreenFullAndAdjust() {
     }
 
     const margin = 60;
-    const leftWall = margin;
-    const rightWall = canvas.width - margin;
-    const topWall = margin;
-    const bottomWall = canvas.height - margin;
+    // Check against fixed world area walls, not viewport edges
+    const worldLeftWall = margin;
+    const worldRightWall = 20000 - margin;
+    const worldTopWall = 80;
+    const worldBottomWall = 20000 - 80;
 
-    // Convert wall positions to world coordinates
-    const worldLeftWall = (leftWall - camera.offsetX) / camera.scale;
-    const worldRightWall = (rightWall - camera.offsetX) / camera.scale;
-    const worldTopWall = (topWall - camera.offsetY) / camera.scale;
-    const worldBottomWall = (bottomWall - camera.offsetY) / camera.scale;
-
-    // Check if any hosts are touching/hitting the walls
+    // Check if any hosts are touching/hitting the fixed world walls
     let touchingLeft = false;
     let touchingRight = false;
     let touchingTop = false;
@@ -143,7 +138,7 @@ function checkScreenFullAndAdjust() {
         }
     }
 
-    // If hosts are touching opposite walls at the same time (screen is "full")
+    // If hosts are touching opposite fixed walls at the same time
     const fullHorizontally = touchingLeft && touchingRight;
     const fullVertically = touchingTop && touchingBottom;
     
