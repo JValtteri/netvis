@@ -10,6 +10,8 @@ import (
 	"netvis/internal/graph"
 )
 
+
+
 type wsMessage struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
@@ -33,7 +35,7 @@ func nextMessage(t *testing.T, ch <-chan []byte) wsMessage {
 
 func TestHubSendsSnapshotOnRegister(t *testing.T) {
 	g := graph.New()
-	hub := NewHub(g, ":8080")
+	hub := NewHub(g, ":3993")
 	go hub.Run()
 
 	client := &Client{hub: hub, send: make(chan []byte, 4)}
@@ -70,7 +72,7 @@ func TestDetectServerIPs(t *testing.T) {
 
 func TestHubBroadcastsPackets(t *testing.T) {
 	g := graph.New()
-	hub := NewHub(g, ":8080")
+	hub := NewHub(g, ":3993")
 	go hub.Run()
 
 	client := &Client{hub: hub, send: make(chan []byte, 4)}
@@ -100,7 +102,7 @@ func TestHubBroadcastsPackets(t *testing.T) {
 func TestHubBroadcastsHostUpdates(t *testing.T) {
 	g := graph.New()
 	g.SetHostUpdateHandler(nil)
-	hub := NewHub(g, ":8080")
+	hub := NewHub(g, ":3993")
 	go hub.Run()
 
 	client := &Client{hub: hub, send: make(chan []byte, 4)}

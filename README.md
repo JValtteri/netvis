@@ -60,7 +60,7 @@ Network-dependent lookups are stubbed in tests.
 ## Run
 
 ```bash
-sudo ./netvis -iface <interface> [-filter "<BPF filter>"] [-addr ":8080"]
+sudo ./netvis -iface <interface> [-filter "<BPF filter>"] [-addr ":3993"]
 ```
 
 Example:
@@ -70,7 +70,7 @@ sudo ./netvis -iface wlan0
 sudo ./netvis -iface eth0 -filter "tcp port 443" -addr ":9090"
 ```
 
-Open <http://localhost:8080> (or the address given with `-addr`) in a browser.
+Open <http://localhost:3993> (or the address given with `-addr`) in a browser.
 
 Run the binary from the repository root (or wherever `web/static/` is available),
 because the server serves the frontend from `web/static/` relative to the current
@@ -82,7 +82,7 @@ working directory.
 | --- | --- | --- |
 | `-iface` | yes | Network interface to capture on (e.g. `eth0`, `wlan0`, `any`). |
 | `-filter` | no | BPF capture filter, e.g. `tcp port 80`, `udp`, `host 192.168.1.10`. |
-| `-addr` | no | HTTP listen address, defaults to `:8080`. |
+| `-addr` | no | HTTP listen address, defaults to `:3993`. |
 
 ### Finding an interface
 

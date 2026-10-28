@@ -42,10 +42,11 @@ func NewHub(g *graph.Graph, addr string) *Hub {
 	return h
 }
 
-// extractPort parses the port from an address like ":8080", "0.0.0.0:8080", or "[::]:8080".
+// extractPort parses the port from an address like ":3993", "0.0.0.0:3993", or "[::]:3993".
 func extractPort(addr string) int {
+    defaultPort := 3993
 	if addr == "" {
-		return 8080
+		return defaultPort
 	}
 	// Handle IPv6 addresses
 	if strings.HasPrefix(addr, "[") {
@@ -54,14 +55,14 @@ func extractPort(addr string) int {
 				return p
 			}
 		}
-		return 8080
+		return defaultPort
 	}
 	if idx := strings.LastIndex(addr, ":"); idx != -1 {
 		if p, err := strconv.Atoi(addr[idx+1:]); err == nil {
 			return p
 		}
 	}
-	return 8080
+	return defaultPort
 }
 
 // detectServerIPs returns the addresses assigned to this machine, across all
