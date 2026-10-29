@@ -110,7 +110,7 @@
                     </label>
                     <label class="slider-row" for="collisionHalo">
                         <span>Collision halo <output id="collisionHaloValue"></output></span>
-                        <input type="range" id="collisionHalo" min="0" max="100" step="1" value="20">
+                        <input type="range" id="collisionHalo" min="0" max="100" step="1" value="43">
                     </label>
                     <label class="slider-row" for="glowDuration">
                         <span>Active glow duration (s) <output id="glowDurationValue"></output></span>
@@ -133,6 +133,41 @@
         </div>
     </div>
     <div id="toast"></div>
+    <div id="hostInfo" class="hidden" role="dialog" aria-label="Host details">
+        <div class="host-info-header">Host details</div>
+        <div class="host-info-row" data-field="ip" title="Click to copy">
+            <span class="host-info-label">IP</span>
+            <span class="host-info-value" data-value="ip"></span>
+        </div>
+        <div class="host-info-row" data-field="hostname" title="Click to copy">
+            <span class="host-info-label">Hostname</span>
+            <span class="host-info-value" data-value="hostname"></span>
+        </div>
+        <div class="host-info-row" data-field="organization" title="Click to copy">
+            <span class="host-info-label">Organization</span>
+            <span class="host-info-value" data-value="organization"></span>
+        </div>
+        <div class="host-info-row" data-field="country" title="Click to copy">
+            <span class="host-info-label">Country</span>
+            <span class="host-info-value" data-value="country"></span>
+        </div>
+        <div class="host-info-row" data-field="packets" title="Click to copy">
+            <span class="host-info-label">Packets</span>
+            <span class="host-info-value" data-value="packets"></span>
+        </div>
+        <div class="host-info-row" data-field="sent" title="Click to copy">
+            <span class="host-info-label">Data sent</span>
+            <span class="host-info-value" data-value="sent"></span>
+        </div>
+        <div class="host-info-row" data-field="received" title="Click to copy">
+            <span class="host-info-label">Data received</span>
+            <span class="host-info-value" data-value="received"></span>
+        </div>
+        <div class="host-info-row" data-field="lastActive" title="Click to copy">
+            <span class="host-info-label">Last active</span>
+            <span class="host-info-value" data-value="lastActive"></span>
+        </div>
+    </div>
     <div id="viewControls">
         <button id="zoomIn" aria-label="Zoom in" title="Zoom in">+</button>
         <button id="zoomOut" aria-label="Zoom out" title="Zoom out">&minus;</button>

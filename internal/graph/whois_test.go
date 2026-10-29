@@ -101,6 +101,53 @@ func TestParseWhoisOrg(t *testing.T) {
 	}
 }
 
+func TestParseWhoisCountry(t *testing.T) {
+	cases := []struct {
+		name string
+		resp string
+		want string
+	}{
+		{
+			name: "ripe country code",
+			resp: "netname: RIPE-NCC\ncountry: nl\n",
+			want: "NL",
+		},
+		{
+			name: "arin country key",
+			resp: "OrgName: Example Org\nCountry: US\n",
+			want: "US",
+		},
+		{
+			name: "country code key",
+			resp: "Country Code: DE\n",
+			want: "DE",
+		},
+		{
+			name: "full country name",
+			resp: "country: Finland\n",
+			want: "Finland",
+		},
+		{
+			name: "skip unavailable value",
+			resp: "country: N/A\n",
+			want: "",
+		},
+		{
+			name: "missing country",
+			resp: "netname: EXAMPLE\n",
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseWhoisCountry(tc.resp); got != tc.want {
+				t.Errorf("parseWhoisCountry() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSplitWhoisLine(t *testing.T) {
 	cases := []struct {
 		line    string

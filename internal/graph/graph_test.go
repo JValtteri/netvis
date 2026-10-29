@@ -45,7 +45,7 @@ func TestIsLocalIP(t *testing.T) {
 
 func TestApplyCreatesHostsAndAggregatesEdges(t *testing.T) {
 	g := New()
-	g.resolve = func(string) string { return "" }
+	g.resolve = func(string) hostDetails { return hostDetails{} }
 
 	g.Apply(capture.Event{
 		Timestamp: time.Now(),
@@ -83,7 +83,7 @@ func TestApplyCreatesHostsAndAggregatesEdges(t *testing.T) {
 
 func TestApplySeparatesDirectionalEdges(t *testing.T) {
 	g := New()
-	g.resolve = func(string) string { return "" }
+	g.resolve = func(string) hostDetails { return hostDetails{} }
 
 	g.Apply(capture.Event{SrcIP: "10.0.0.1", DstIP: "8.8.8.8", Proto: "TCP", Bytes: 10})
 	g.Apply(capture.Event{SrcIP: "8.8.8.8", DstIP: "10.0.0.1", Proto: "TCP", Bytes: 20})
@@ -96,33 +96,45 @@ func TestApplySeparatesDirectionalEdges(t *testing.T) {
 
 func TestHostNameResolutionIsAsyncAndPushed(t *testing.T) {
 	g := New()
-	g.resolve = func(string) string { return "Test Org" }
+	g.resolve = func(string) hostDetails {
+		return hostDetails{Hostname: "test.example", Organization: "Test Org", Country: "US"}
+	}
 
 	updates := make(chan Host, 4)
 	g.SetHostUpdateHandler(func(h Host) { updates <- h })
 
 	g.Apply(capture.Event{SrcIP: "10.0.0.1", DstIP: "8.8.8.8", Proto: "UDP", Bytes: 1})
 
-	seen := map[string]string{}
+	seen := map[string]Host{}
 	for i := 0; i < 2; i++ {
 		select {
 		case h := <-updates:
-			seen[h.IP] = h.Hostname
+			seen[h.IP] = h
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timed out waiting for host update %d", i+1)
 		}
 	}
 
 	for _, ip := range []string{"10.0.0.1", "8.8.8.8"} {
-		if seen[ip] != "Test Org" {
-			t.Errorf("update for %s = %q, want %q", ip, seen[ip], "Test Org")
+		h := seen[ip]
+		if h.Hostname != "test.example" {
+			t.Errorf("update for %s hostname = %q, want %q", ip, h.Hostname, "test.example")
+		}
+		if h.Organization != "Test Org" {
+			t.Errorf("update for %s organization = %q, want %q", ip, h.Organization, "Test Org")
+		}
+		if h.Country != "US" {
+			t.Errorf("update for %s country = %q, want %q", ip, h.Country, "US")
 		}
 	}
 
 	snap := g.Snapshot()
 	for _, h := range snap.Hosts {
-		if h.Hostname != "Test Org" {
-			t.Errorf("snapshot host %s hostname = %q, want %q", h.IP, h.Hostname, "Test Org")
+		if h.Hostname != "test.example" {
+			t.Errorf("snapshot host %s hostname = %q, want %q", h.IP, h.Hostname, "test.example")
+		}
+		if h.Organization != "Test Org" || h.Country != "US" {
+			t.Errorf("snapshot host %s details = %+v, want organization %q country %q", h.IP, h, "Test Org", "US")
 		}
 	}
 }
@@ -130,9 +142,9 @@ func TestHostNameResolutionIsAsyncAndPushed(t *testing.T) {
 func TestHostNameResolutionIsCached(t *testing.T) {
 	g := New()
 	var calls int32
-	g.resolve = func(string) string {
+	g.resolve = func(string) hostDetails {
 		atomic.AddInt32(&calls, 1)
-		return "Cached Name"
+		return hostDetails{Hostname: "cached.example"}
 	}
 
 	updates := make(chan Host, 4)
@@ -158,7 +170,7 @@ func TestHostNameResolutionIsCached(t *testing.T) {
 
 func TestSnapshotIsACopy(t *testing.T) {
 	g := New()
-	g.resolve = func(string) string { return "" }
+	g.resolve = func(string) hostDetails { return hostDetails{} }
 	g.Apply(capture.Event{SrcIP: "10.0.0.1", DstIP: "8.8.8.8", Proto: "TCP", Bytes: 1})
 
 	snap := g.Snapshot()

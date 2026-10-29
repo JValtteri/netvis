@@ -267,7 +267,236 @@ function fallbackCopy(text) {
     document.body.removeChild(textarea);
 }
 
+// Host info tooltip: shown after hovering a host for 0.5 s, or pinned by
+// clicking a host. Rows copy their value to the clipboard when clicked.
+const hostInfoEl = document.getElementById('hostInfo');
+const HOST_INFO_HOVER_DELAY = 500;
+const HOST_INFO_HIDE_DELAY = 300;
+
+let hostInfoHost = null;
+let hostInfoPinned = false;
+let hostHoverTimer = null;
+let hostHideTimer = null;
+let pendingHoverHost = null;
+
+function clearHostHoverTimer() {
+    if (hostHoverTimer) {
+        clearTimeout(hostHoverTimer);
+        hostHoverTimer = null;
+    }
+}
+
+function clearHostHideTimer() {
+    if (hostHideTimer) {
+        clearTimeout(hostHideTimer);
+        hostHideTimer = null;
+    }
+}
+
+function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) {
+        return `${value} B`;
+    }
+    const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
+    let scaled = value;
+    let unit = -1;
+    do {
+        scaled /= 1024;
+        unit++;
+    } while (scaled >= 1024 && unit < units.length - 1);
+    const digits = scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2;
+    return `${scaled.toFixed(digits)} ${units[unit]}`;
+}
+
+function formatLastActive(timestamp) {
+    const value = Number(timestamp);
+    if (!value) {
+        return 'Unknown';
+    }
+    return new Date(value).toLocaleString();
+}
+
+function hostInfoValues(host) {
+    return {
+        ip: host.ip || '',
+        hostname: host.hostname || '',
+        organization: host.organization || '',
+        country: host.country || '',
+        packets: ((host.sentCount || 0) + (host.receivedCount || 0)).toLocaleString(),
+        sent: formatBytes(host.bytesSent || 0),
+        received: formatBytes(host.bytesReceived || 0),
+        lastActive: formatLastActive(host.lastActivityAt)
+    };
+}
+
+function positionHostInfo(host) {
+    if (!host || hostInfoEl.classList.contains('hidden')) {
+        return;
+    }
+    const canvasRect = canvas.getBoundingClientRect();
+    const screenX = canvasRect.left + host.x * camera.scale + camera.offsetX;
+    const screenY = canvasRect.top + host.y * camera.scale + camera.offsetY;
+    const radius = host.radius * camera.scale;
+    const gap = 12;
+    const width = hostInfoEl.offsetWidth;
+    const height = hostInfoEl.offsetHeight;
+
+    let left = screenX + radius + gap;
+    if (left + width > window.innerWidth - 8) {
+        left = screenX - radius - gap - width;
+    }
+    left = clamp(left, 8, Math.max(8, window.innerWidth - width - 8));
+
+    let top = screenY - height / 2;
+    top = clamp(top, 8, Math.max(8, window.innerHeight - height - 8));
+
+    hostInfoEl.style.left = `${Math.round(left)}px`;
+    hostInfoEl.style.top = `${Math.round(top)}px`;
+}
+
+function refreshHostInfo() {
+    if (!hostInfoHost) {
+        return;
+    }
+    if (!hosts.has(hostInfoHost.ip)) {
+        hideHostInfo();
+        return;
+    }
+
+    const values = hostInfoValues(hostInfoHost);
+    for (const [field, value] of Object.entries(values)) {
+        const el = hostInfoEl.querySelector(`[data-value="${field}"]`);
+        if (!el) {
+            continue;
+        }
+        const text = value || '—';
+        if (el.textContent !== text) {
+            el.textContent = text;
+        }
+    }
+    positionHostInfo(hostInfoHost);
+}
+
+function showHostInfo(host, pinned) {
+    if (!host) {
+        return;
+    }
+    hostInfoHost = host;
+    hostInfoPinned = pinned;
+    clearHostHoverTimer();
+    clearHostHideTimer();
+    pendingHoverHost = null;
+    hostInfoEl.classList.remove('hidden');
+    refreshHostInfo();
+}
+
+function closeHostInfo() {
+    hostInfoHost = null;
+    hostInfoPinned = false;
+    hostInfoEl.classList.add('hidden');
+}
+
+function hideHostInfo() {
+    clearHostHoverTimer();
+    clearHostHideTimer();
+    pendingHoverHost = null;
+    closeHostInfo();
+}
+
+function startHostInfoHideTimer() {
+    if (hostInfoPinned || !hostInfoHost || hostHideTimer) {
+        return;
+    }
+    hostHideTimer = setTimeout(() => {
+        hostHideTimer = null;
+        if (!hostInfoPinned) {
+            closeHostInfo();
+        }
+    }, HOST_INFO_HIDE_DELAY);
+}
+
+function handleHostHover(host) {
+    if (draggedHost || isPanning) {
+        clearHostHoverTimer();
+        pendingHoverHost = null;
+        return;
+    }
+    if (hostInfoPinned) {
+        return;
+    }
+
+    if (!host) {
+        clearHostHoverTimer();
+        pendingHoverHost = null;
+        if (hostInfoHost) {
+            startHostInfoHideTimer();
+        }
+        return;
+    }
+
+    // Already showing this host, or waiting to show it: keep it open.
+    if (hostInfoHost === host) {
+        clearHostHideTimer();
+        clearHostHoverTimer();
+        pendingHoverHost = null;
+        return;
+    }
+
+    if (pendingHoverHost !== host) {
+        clearHostHoverTimer();
+        pendingHoverHost = host;
+        hostHoverTimer = setTimeout(() => {
+            hostHoverTimer = null;
+            const pending = pendingHoverHost;
+            pendingHoverHost = null;
+            if (pending !== host || draggedHost || isPanning || hostInfoPinned) {
+                return;
+            }
+            if (hosts.has(host.ip)) {
+                showHostInfo(host, false);
+            }
+        }, HOST_INFO_HOVER_DELAY);
+    }
+
+    // Leaving the host currently shown starts the 0.3 s hide countdown. It is
+    // not reset by further movement over the new host.
+    if (hostInfoHost) {
+        startHostInfoHideTimer();
+    }
+}
+
+function handleHostInfoEnter() {
+    clearHostHideTimer();
+    clearHostHoverTimer();
+    pendingHoverHost = null;
+}
+
+hostInfoEl.addEventListener('mouseenter', handleHostInfoEnter);
+hostInfoEl.addEventListener('mouseleave', startHostInfoHideTimer);
+
+hostInfoEl.addEventListener('click', (e) => {
+    const row = e.target.closest('.host-info-row');
+    if (!row) {
+        return;
+    }
+    const valueEl = row.querySelector('[data-value]');
+    const value = valueEl ? valueEl.textContent : '';
+    if (value) {
+        copyToClipboard(value);
+    }
+});
+
+// Any click outside the tooltip dismisses it.
+document.addEventListener('pointerdown', (e) => {
+    if (!hostInfoEl.contains(e.target)) {
+        hideHostInfo();
+    }
+});
+
 canvas.addEventListener('mousedown', (e) => {
+    clearHostHoverTimer();
+    pendingHoverHost = null;
     const screen = getMousePos(e);
     const pos = screenToWorld(screen);
     const host = hostAtPosition(pos);
@@ -301,6 +530,7 @@ canvas.addEventListener('mousemove', (e) => {
     const screen = getMousePos(e);
     const pos = screenToWorld(screen);
     if (isPanning && !draggedHost) {
+        handleHostHover(null);
         if (Math.sqrt((screen.x - panStartX) ** 2 + (screen.y - panStartY) ** 2) > 4) {
             dragMoved = true;
         }
@@ -311,11 +541,17 @@ canvas.addEventListener('mousemove', (e) => {
         return;
     }
     if (!draggedHost) {
-        canvas.style.cursor = hostAtPosition(pos) ? 'grab' : 'default';
+        const hoveredHost = hostAtPosition(pos);
+        canvas.style.cursor = hoveredHost ? 'grab' : 'default';
+        handleHostHover(hoveredHost);
         return;
     }
+    handleHostHover(null);
     if (Math.sqrt((screen.x - pressX) ** 2 + (screen.y - pressY) ** 2) > 4) {
         dragMoved = true;
+        if (hostInfoHost && !hostInfoPinned) {
+            hideHostInfo();
+        }
     }
     canvas.style.cursor = 'grabbing';
     // Clamp in world space to fixed world bounds (walls independent of camera)
@@ -328,10 +564,19 @@ canvas.addEventListener('mousemove', (e) => {
     needRedraw = true;
 });
 
+// Leaving the canvas also counts as leaving the hovered host.
+canvas.addEventListener('mouseleave', () => {
+    clearHostHoverTimer();
+    pendingHoverHost = null;
+    if (hostInfoHost && !hostInfoPinned) {
+        startHostInfoHideTimer();
+    }
+});
+
 window.addEventListener('mouseup', () => {
-    // Clicking (without dragging) a host copies its IP address
+    // Clicking (without dragging) a host pins its info window.
     if (pressedHost && !dragMoved) {
-        copyToClipboard(pressedHost.ip);
+        showHostInfo(pressedHost, true);
     }
     pressedHost = null;
     draggedHost = null;
@@ -365,6 +610,8 @@ function touchPoints(e) {
 }
 
 canvas.addEventListener('touchstart', (e) => {
+    clearHostHoverTimer();
+    pendingHoverHost = null;
     const points = touchPoints(e);
     if (points.length >= 2) {
         e.preventDefault();
@@ -471,7 +718,7 @@ canvas.addEventListener('touchmove', (e) => {
 function endTouch() {
     if (touchDragging) {
         if (pressedHost && !dragMoved) {
-            copyToClipboard(pressedHost.ip);
+            showHostInfo(pressedHost, true);
         }
     }
     if (touchPanning && pressedHost && !dragMoved) {
@@ -643,7 +890,7 @@ const settings = {
     packetSizeScale: 0.3,
     minHostSize: 5,
     maxHostSize: 44,
-    collisionHalo: 20,
+    collisionHalo: 43,
     glowDuration: 10,
     passiveTimeout: 120,
     autoRemovePassive: false,
@@ -737,6 +984,9 @@ function removeHosts(predicate) {
     if (draggedHost && removed.includes(draggedHost.ip)) {
         draggedHost = null;
     }
+    if (hostInfoHost && removed.includes(hostInfoHost.ip)) {
+        hideHostInfo();
+    }
     hostArrayDirty = true;
     needRedraw = true;
     updateHostSizes();
@@ -766,10 +1016,13 @@ function isLocalIP(ip) {
 }
 
 function displayHostname(host) {
-    if (!host.hostname) {
+    // External hosts use their whois organization as the label (falling back
+    // to reverse DNS); local hosts just use their reversed-DNS hostname.
+    const name = isLocalIP(host.ip) ? host.hostname : (host.organization || host.hostname);
+    if (!name) {
         return '';
     }
-    return host.hostname.length > 16 ? host.hostname.substring(0, 13) + '...' : host.hostname;
+    return name.length > 16 ? name.substring(0, 13) + '...' : name;
 }
 
 // Long IPv6 addresses are truncated for display; the full address is still
@@ -1042,6 +1295,8 @@ function getHostPosition(ip) {
         hosts.set(ip, {
             ip: ip,
             hostname: '',
+            organization: '',
+            country: '',
             x: pos.x,
             y: pos.y,
             vx: (Math.random() - 0.5) * 0.3,
@@ -1107,6 +1362,8 @@ function handleMessage(msg) {
                     hosts.set(h.ip, {
                         ip: h.ip,
                         hostname: h.hostname,
+                        organization: h.organization || '',
+                        country: h.country || '',
                         x: pos.x,
                         y: pos.y,
                         vx: (Math.random() - 0.5) * 0.3,
@@ -1126,7 +1383,12 @@ function handleMessage(msg) {
                 } else {
                     const host = hosts.get(h.ip);
                     host.hostname = h.hostname;
+                    host.organization = h.organization || '';
+                    host.country = h.country || '';
                     hostLabelBoundsCache.clear();
+                    if (hostInfoHost === host) {
+                        refreshHostInfo();
+                    }
                 }
             }
         }
@@ -1153,17 +1415,27 @@ function handleMessage(msg) {
         const info = msg.data;
         const host = hosts.get(info.ip);
         if (host) {
-            if (host.hostname !== info.hostname) {
-                host.hostname = info.hostname;
+            const hostname = info.hostname || '';
+            const organization = info.organization || '';
+            const country = info.country || '';
+            if (host.hostname !== hostname || host.organization !== organization) {
+                host.hostname = hostname;
+                host.organization = organization;
+                host.country = country;
                 hostLabelBoundsCache.clear();
                 needRedraw = true;
+            } else if (host.country !== country) {
+                host.country = country;
+            }
+            if (hostInfoHost === host) {
+                refreshHostInfo();
             }
         }
         updateStats();
     } else if (msg.type === 'packet') {
         const ev = msg.data;
-        const srcHost = hosts.has(ev.srcIP) ? hosts.get(ev.srcIP) : (function(){ const p = findBestHostPosition([ev.dstIP]); hosts.set(ev.srcIP,{ip:ev.srcIP,hostname:'',x:p.x,y:p.y,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,radius:22,sentCount:0,receivedCount:0,bytesSent:0,bytesReceived:0,lastSentAt:0,lastActivityAt:Date.now(),glowLevel:0}); hostArrayDirty=true; needRedraw=true; updateHostSizes(); return hosts.get(ev.srcIP); })();
-        const dstHost = hosts.has(ev.dstIP) ? hosts.get(ev.dstIP) : (function(){ const p = findBestHostPosition([ev.srcIP]); hosts.set(ev.dstIP,{ip:ev.dstIP,hostname:'',x:p.x,y:p.y,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,radius:22,sentCount:0,receivedCount:0,bytesSent:0,bytesReceived:0,lastSentAt:0,lastActivityAt:Date.now(),glowLevel:0}); hostArrayDirty=true; needRedraw=true; updateHostSizes(); return hosts.get(ev.dstIP); })();
+        const srcHost = hosts.has(ev.srcIP) ? hosts.get(ev.srcIP) : (function(){ const p = findBestHostPosition([ev.dstIP]); hosts.set(ev.srcIP,{ip:ev.srcIP,hostname:'',organization:'',country:'',x:p.x,y:p.y,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,radius:22,sentCount:0,receivedCount:0,bytesSent:0,bytesReceived:0,lastSentAt:0,lastActivityAt:Date.now(),glowLevel:0}); hostArrayDirty=true; needRedraw=true; updateHostSizes(); return hosts.get(ev.srcIP); })();
+        const dstHost = hosts.has(ev.dstIP) ? hosts.get(ev.dstIP) : (function(){ const p = findBestHostPosition([ev.srcIP]); hosts.set(ev.dstIP,{ip:ev.dstIP,hostname:'',organization:'',country:'',x:p.x,y:p.y,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,radius:22,sentCount:0,receivedCount:0,bytesSent:0,bytesReceived:0,lastSentAt:0,lastActivityAt:Date.now(),glowLevel:0}); hostArrayDirty=true; needRedraw=true; updateHostSizes(); return hosts.get(ev.dstIP); })();
         const now = Date.now();
         srcHost.sentCount = (srcHost.sentCount || 0) + 1;
         dstHost.receivedCount = (dstHost.receivedCount || 0) + 1;
@@ -1721,6 +1993,11 @@ function animate() {
             ctx.fillStyle = hasSent ? '#fff' : '#aaa';
                 ctx.fillText(hostnameText, host.x, hostnameY);
         }
+    }
+
+    // Keep an open info window anchored to its host as the layout moves.
+    if (hostInfoHost) {
+        refreshHostInfo();
     }
     
     requestAnimationFrame(animate);

@@ -10,16 +10,20 @@ import (
 
 const maxWhoisResponse = 1 << 20 // 1 MiB
 
-// lookupWhoisOrg resolves the organization responsible for an external IP by
-// querying the IANA whois referral and then the authoritative RIR whois server.
-func lookupWhoisOrg(ip string) string {
+// lookupWhoisInfo resolves the organization and country responsible for an
+// external IP by querying the IANA whois referral and then the authoritative
+// RIR whois server.
+func lookupWhoisInfo(ip string) (org, country string) {
 	ianaResp := whoisQuery("whois.iana.org", ip, 3*time.Second)
 	if server := parseWhoisReferral(ianaResp); server != "" {
-		if org := parseWhoisOrg(whoisQuery(server, ip, 5*time.Second)); org != "" {
-			return org
+		resp := whoisQuery(server, ip, 5*time.Second)
+		org = parseWhoisOrg(resp)
+		country = parseWhoisCountry(resp)
+		if org != "" || country != "" {
+			return org, country
 		}
 	}
-	return parseWhoisOrg(ianaResp)
+	return parseWhoisOrg(ianaResp), parseWhoisCountry(ianaResp)
 }
 
 func whoisQuery(server, query string, timeout time.Duration) string {
@@ -96,6 +100,31 @@ func parseWhoisOrg(resp string) string {
 	}
 
 	return best
+}
+
+var whoisCountryKeys = map[string]bool{
+	"country":      true,
+	"country-code": true,
+	"country code": true,
+	"countrycode":  true,
+}
+
+func parseWhoisCountry(resp string) string {
+	for _, line := range strings.Split(resp, "\n") {
+		key, value := splitWhoisLine(line)
+		if !whoisCountryKeys[strings.ToLower(key)] {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if !usefulWhoisValue(value) {
+			continue
+		}
+		if len(value) == 2 {
+			return strings.ToUpper(value)
+		}
+		return value
+	}
+	return ""
 }
 
 func splitWhoisLine(line string) (string, string) {

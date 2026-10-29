@@ -16,9 +16,9 @@ packets.
 | --- | --- | --- |
 | CLI | `cmd/netvis/` | Parse flags (`-iface`, `-filter`, `-addr`), start capture and HTTP server, handle shutdown. |
 | Capture | `internal/capture/` | Open an interface via libpcap (cgo + gopacket), apply BPF filters, parse L3/L4, emit normalized events. |
-| Graph | `internal/graph/` | Thread-safe host/edge store, traffic counters, async display-name resolution (reverse DNS for local hosts, whois organization with reverse-DNS fallback for external hosts), snapshots. |
+| Graph | `internal/graph/` | Thread-safe host/edge store, traffic counters, async hostname/organization/country resolution, snapshots. |
 | Server | `internal/server/` | Static file serving, WebSocket upgrade, hub broadcast, client ping/pong. |
-| Frontend | `web/static/` | Canvas renderer, force layout, interactions, settings UI. |
+| Frontend | `web/static/` | Canvas renderer, force layout, host info window, interactions, settings UI. |
 
 ### Data flow
 
@@ -54,14 +54,18 @@ WebSocket messages are wrapped as:
 
 - Each observed host is a blob identified by IP (no duplicates) and displayed
   with its IP.
-- Display name resolution is asynchronous and cached:
-  - **Local/private hosts** use reverse DNS for a hostname (3 s timeout).
-  - **External hosts** use a whois lookup: query `whois.iana.org` for the
-    authoritative RIR server, then query that server and extract the
+- Display details are resolved asynchronously and cached per IP:
+  - **All hosts** use reverse DNS for a hostname (3 s timeout).
+  - **External hosts** additionally use a whois lookup: query `whois.iana.org`
+    for the authoritative RIR server, then query that server and extract the
     organization (`org-name`, `OrgName`, `organization`, `owner`, `descr`, or
-    `netname`). If no organization is found, reverse DNS is used as a fallback.
+    `netname`) and country (`country`, `country-code`, or `country code`).
+  - The graph host record carries `hostname`, `organization`, and `country`.
+    The canvas label uses the hostname for local hosts and the organization for
+    external hosts, falling back to the hostname when no organization is known.
   - If no name is available the label is left empty. Resolution results are
-    pushed to clients as `host` messages and fill in the label when they arrive.
+    pushed to clients as `host` messages and fill in the label and host info
+    window when they arrive.
 - Colour coding:
   - **Green** — local/private-network host.
   - **Blue** — remote/external host.
@@ -113,8 +117,18 @@ WebSocket messages are wrapped as:
 - The view is controlled by a camera (scale + offset) rather than by scaling host
   positions. Zoom/fit leaves graph coordinates independent of the viewport.
 - Dragging a blob repositions it and temporarily excludes it from physics.
-- Clicking a host or its labels copies the IP to the clipboard and shows a fading
-  toast notification.
+- A host info window opens next to the host after hovering it for 0.5 s, or when
+  the host is clicked. Clicking a host pins the window; clicking anywhere outside
+  the window dismisses it.
+- The window shows the host IP, hostname, organization, country, total packet
+  count (sent + received), total data sent, total data received, and last active
+  time. It follows the host as the layout moves and updates live as traffic
+  arrives.
+- Clicking any field in the window copies that field's text to the clipboard and
+  shows a toast notification.
+- A hover-opened window closes once the cursor has been outside both the host and
+  the window for 0.3 s. Hovering the window keeps it open, and dragging a host
+  does not trigger hover tooltips.
 - The canvas is cleared to opaque black each frame to prevent smearing/trails.
 
 ## Frontend controls

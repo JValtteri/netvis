@@ -10,8 +10,19 @@ import (
 )
 
 type Host struct {
-	IP       string `json:"ip"`
-	Hostname string `json:"hostname"`
+	IP           string `json:"ip"`
+	Hostname     string `json:"hostname"`
+	Organization string `json:"organization,omitempty"`
+	Country      string `json:"country,omitempty"`
+}
+
+// hostDetails is the result of an asynchronous display-name lookup. Hostname
+// comes from reverse DNS, while Organization and Country come from whois for
+// external addresses.
+type hostDetails struct {
+	Hostname     string
+	Organization string
+	Country      string
 }
 
 type Edge struct {
@@ -26,10 +37,10 @@ type Graph struct {
 	hosts   map[string]*Host
 	edges   map[string]*Edge
 	onHost  func(Host)
-	resolve func(string) string
+	resolve func(string) hostDetails
 
 	lookupMu  sync.Mutex
-	nameCache map[string]string
+	nameCache map[string]hostDetails
 	pending   map[string]bool
 }
 
@@ -37,7 +48,7 @@ func New() *Graph {
 	return &Graph{
 		hosts:     make(map[string]*Host),
 		edges:     make(map[string]*Edge),
-		nameCache: make(map[string]string),
+		nameCache: make(map[string]hostDetails),
 		pending:   make(map[string]bool),
 		resolve:   resolveName,
 	}
@@ -61,11 +72,11 @@ func (g *Graph) Apply(ev capture.Event) {
 	g.mu.Lock()
 	// Ensure hosts exist
 	if _, ok := g.hosts[ev.SrcIP]; !ok {
-		g.hosts[ev.SrcIP] = &Host{IP: ev.SrcIP, Hostname: g.cachedName(ev.SrcIP)}
+		g.hosts[ev.SrcIP] = newHost(ev.SrcIP, g.cachedDetails(ev.SrcIP))
 		newHosts = append(newHosts, ev.SrcIP)
 	}
 	if _, ok := g.hosts[ev.DstIP]; !ok {
-		g.hosts[ev.DstIP] = &Host{IP: ev.DstIP, Hostname: g.cachedName(ev.DstIP)}
+		g.hosts[ev.DstIP] = newHost(ev.DstIP, g.cachedDetails(ev.DstIP))
 		newHosts = append(newHosts, ev.DstIP)
 	}
 
@@ -88,15 +99,24 @@ func (g *Graph) Apply(ev capture.Event) {
 	}
 }
 
-func (g *Graph) cachedName(ip string) string {
+func (g *Graph) cachedDetails(ip string) hostDetails {
 	g.lookupMu.Lock()
 	defer g.lookupMu.Unlock()
 	return g.nameCache[ip]
 }
 
-// scheduleLookup resolves a display name for the host without blocking packet
-// processing. Local hosts use reverse DNS; external hosts use a whois
-// organization lookup.
+func newHost(ip string, details hostDetails) *Host {
+	return &Host{
+		IP:           ip,
+		Hostname:     details.Hostname,
+		Organization: details.Organization,
+		Country:      details.Country,
+	}
+}
+
+// scheduleLookup resolves display details for the host without blocking packet
+// processing. Local hosts use reverse DNS; external hosts also use a whois
+// organization/country lookup.
 func (g *Graph) scheduleLookup(ip string) {
 	g.lookupMu.Lock()
 	if _, ok := g.nameCache[ip]; ok {
@@ -115,10 +135,10 @@ func (g *Graph) scheduleLookup(ip string) {
 		if resolve == nil {
 			resolve = resolveName
 		}
-		name := resolve(ip)
+		details := resolve(ip)
 
 		g.lookupMu.Lock()
-		g.nameCache[ip] = name
+		g.nameCache[ip] = details
 		delete(g.pending, ip)
 		g.lookupMu.Unlock()
 
@@ -129,7 +149,9 @@ func (g *Graph) scheduleLookup(ip string) {
 		)
 		g.mu.Lock()
 		if h, ok := g.hosts[ip]; ok {
-			h.Hostname = name
+			h.Hostname = details.Hostname
+			h.Organization = details.Organization
+			h.Country = details.Country
 			updated = *h
 			found = true
 			cb = g.onHost
@@ -142,17 +164,27 @@ func (g *Graph) scheduleLookup(ip string) {
 	}()
 }
 
-func resolveName(ip string) string {
+func resolveName(ip string) hostDetails {
 	parsed := net.ParseIP(ip)
 	if parsed != nil && isLocalIP(parsed) {
-		return lookupHostname(ip)
+		return hostDetails{Hostname: lookupHostname(ip)}
 	}
-	// External hosts prefer the whois organization, with reverse DNS as a
-	// fallback when no organization is available.
-	if org := lookupWhoisOrg(ip); org != "" {
-		return org
-	}
-	return lookupHostname(ip)
+
+	// External hosts get reverse DNS and whois details in parallel so a slow
+	// whois server does not delay the hostname (and vice versa).
+	var details hostDetails
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		details.Hostname = lookupHostname(ip)
+	}()
+	go func() {
+		defer wg.Done()
+		details.Organization, details.Country = lookupWhoisInfo(ip)
+	}()
+	wg.Wait()
+	return details
 }
 
 func isLocalIP(ip net.IP) bool {

@@ -258,6 +258,62 @@ body {
     transform: translateX(-50%) translateY(0);
 }
 
+#hostInfo {
+    position: fixed;
+    z-index: 250;
+    min-width: 230px;
+    max-width: min(360px, calc(100vw - 16px));
+    padding: 10px 12px;
+    color: #fff;
+    background: rgba(20, 20, 20, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(10px);
+    font-size: 12px;
+}
+
+#hostInfo.hidden {
+    display: none;
+}
+
+.host-info-header {
+    margin-bottom: 6px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #4a90e2;
+}
+
+.host-info-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 3px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.host-info-row:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.host-info-label {
+    flex: none;
+    color: #999;
+}
+
+.host-info-value {
+    min-width: 0;
+    color: #fff;
+    font-family: monospace;
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+
 #viewControls {
     position: absolute;
     right: 16px;

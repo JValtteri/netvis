@@ -7,6 +7,9 @@ streams updates to a browser-based 2D canvas over WebSockets.
 - Hosts are drawn as blobs labelled with their IP address and a display name:
   reverse-DNS hostname for local hosts, whois organization name for external
   hosts, falling back to reverse DNS when no organization is available.
+- Hovering a host for 0.5 s or clicking it opens an info window with its IP,
+  hostname, organization, country, packet count, data totals, and last active
+  time. Clicking a field copies it; clicking outside closes the window.
 - Each unique source → destination IP pair becomes an edge.
 - Every captured packet is animated as a particle travelling along its edge; the
   colour encodes the protocol and the size encodes the packet size. Traffic
@@ -175,12 +178,11 @@ DESIGN.md            Design document and implementation notes
 1. `capture` opens the interface with libpcap, applies an optional BPF filter and
    emits normalized events: `{ts, srcIP, dstIP, proto, bytes}`.
 2. `graph` records hosts and edges keyed by `srcIP->dstIP`, accumulating packet
-   counts and byte totals. Display names are resolved asynchronously: reverse DNS
-   (with a 3 s timeout) for local/private addresses, and a whois organization
-   lookup (via IANA referral to the responsible RIR) for external addresses,
-   falling back to reverse DNS when whois has no organization. Resolved names are
-   streamed to clients as `host` messages and filled into the label when they
-   arrive.
+   counts and byte totals. Host details are resolved asynchronously: reverse DNS
+   (with a 3 s timeout) for hostnames, and a whois organization/country lookup
+   (via IANA referral to the responsible RIR) for external addresses. Resolved
+   details are streamed to clients as `host` messages and fill in the label and
+   host info window when they arrive.
 3. `server` broadcasts each event to connected WebSocket clients and sends a
    full snapshot when a client connects.
 4. The frontend renders the snapshot, then applies live packet events, animating
