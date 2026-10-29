@@ -31,3 +31,6 @@ key
 *.pem
 *.json
 *.sh
+
+# Force include the actual main
+!cmd/*
