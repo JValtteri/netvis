@@ -153,6 +153,10 @@ and normalizes them to one-record aggregates.
   bounding box as a soft repulsion (a fraction of the overlap is resolved per
   frame). The collision area scales with the rendered label content, with extra
   vertical spacing so IP/hostname labels on nearby hosts don't touch.
+- The world is finite, but its walls are not hard stops: whenever a blob would
+  cross an edge, the world expands symmetrically in every direction around the
+  centering-force centre. Dragged blobs also trigger expansion instead of being
+  clamped at the boundary.
 - Long IPv6 address labels are truncated for display; copying a host still uses
   the full address.
 - Blob velocity is damped by drag, so blobs settle instead of creeping forward.

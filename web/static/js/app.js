@@ -31,6 +31,45 @@ function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
+// The world is a finite box that grows outward from the point used by the
+// centering force. Hosts are never pinned to a wall: whenever a host would
+// cross an edge, the box expands symmetrically in every direction instead.
+const WORLD_EXPANSION_STEP = 1.25;
+
+const world = {
+    centerX: canvas.width / 2,
+    centerY: canvas.height / 2,
+    halfWidth: canvas.width / 2,
+    halfHeight: canvas.height / 2
+};
+
+function worldContainsHost(host) {
+    return Math.abs(host.x - world.centerX) + host.radius <= world.halfWidth &&
+           Math.abs(host.y - world.centerY) + host.radius <= world.halfHeight;
+}
+
+function expandWorldFor(host) {
+    if (worldContainsHost(host)) {
+        return false;
+    }
+
+    // Scale both axes by the same factor so the world grows in every
+    // direction while remaining centred on the centering-force point. The
+    // required ratio guarantees the triggering host ends up inside; the
+    // minimum step avoids tiny expansions when a host only just crosses.
+    const requiredHalfWidth = Math.abs(host.x - world.centerX) + host.radius;
+    const requiredHalfHeight = Math.abs(host.y - world.centerY) + host.radius;
+    const scale = Math.max(
+        WORLD_EXPANSION_STEP,
+        requiredHalfWidth / world.halfWidth,
+        requiredHalfHeight / world.halfHeight
+    );
+
+    world.halfWidth *= scale;
+    world.halfHeight *= scale;
+    return true;
+}
+
 function screenToWorld(pos) {
     return {
         x: (pos.x - camera.offsetX) / camera.scale,
@@ -75,7 +114,7 @@ function fitToView() {
         maxY = Math.max(maxY, host.y + bounds.bottom);
     }
 
-    const padding = 40 * worldAreaScale;
+    const padding = 40;
     const spanX = Math.max(1, maxX - minX);
     const spanY = Math.max(1, maxY - minY);
     // Don't over-magnify a nearly empty graph; just centre it.
@@ -83,102 +122,6 @@ function fitToView() {
         Math.min((canvas.width - padding * 2) / spanX, (canvas.height - padding * 2) / spanY),
         camera.minScale,
         Math.min(camera.maxScale, 2)
-    );
-
-    camera.scale = scale;
-    camera.offsetX = canvas.width / 2 - ((minX + maxX) / 2) * scale;
-    camera.offsetY = canvas.height / 2 - ((minY + maxY) / 2) * scale;
-    needRedraw = true;
-}
-
-function expandWorldBounds() {
-    worldAreaScale *= WORLD_AREA_SCALE_STEP;
-    if (worldAreaScale > WORLD_AREA_SCALE_MAX) {
-        worldAreaScale = WORLD_AREA_SCALE_MAX;
-    }
-    worldBounds.enabled = true;
-    needRedraw = true;
-}
-
-function checkScreenFullAndAdjust() {
-    updateHostArrayCache();
-    const hostArray = hostArrayCache;
-    if (hostArray.length === 0) {
-        return;
-    }
-
-    const margin = 60;
-    // Check against fixed world area walls, not viewport edges
-    const worldLeftWall = margin;
-    const worldRightWall = 20000 - margin;
-    const worldTopWall = 80;
-    const worldBottomWall = 20000 - 80;
-
-    // Check if any hosts are touching/hitting the fixed world walls
-    let touchingLeft = false;
-    let touchingRight = false;
-    let touchingTop = false;
-    let touchingBottom = false;
-
-    for (let i = 0; i < hostArray.length; i++) {
-        const host = hostArray[i];
-        const bounds = hostLabelBounds(host);
-        // Consider host touching wall if it's very close to wall boundary
-        if (host.x - bounds.halfWidth <= worldLeftWall + 2) {
-            touchingLeft = true;
-        }
-        if (host.x + bounds.halfWidth >= worldRightWall - 2) {
-            touchingRight = true;
-        }
-        if (host.y - bounds.top <= worldTopWall + 2) {
-            touchingTop = true;
-        }
-        if (host.y + bounds.bottom >= worldBottomWall - 2) {
-            touchingBottom = true;
-        }
-    }
-
-    // If hosts are touching opposite fixed walls at the same time
-    const fullHorizontally = touchingLeft && touchingRight;
-    const fullVertically = touchingTop && touchingBottom;
-    
-    if (fullHorizontally || fullVertically) {
-        if (worldAreaScale < WORLD_AREA_SCALE_MAX) {
-            expandWorldBounds();
-            fitToView();
-        }
-    }
-}
-
-function fitToViewExpanded() {
-    updateHostArrayCache();
-    if (hostArrayCache.length === 0) {
-        camera.scale = 1;
-        camera.offsetX = 0;
-        camera.offsetY = 0;
-        needRedraw = true;
-        return;
-    }
-
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (let i = 0; i < hostArrayCache.length; i++) {
-        const host = hostArrayCache[i];
-        const bounds = hostLabelBounds(host);
-        minX = Math.min(minX, host.x - bounds.halfWidth);
-        maxX = Math.max(maxX, host.x + bounds.halfWidth);
-        minY = Math.min(minY, host.y - bounds.top);
-        maxY = Math.max(maxY, host.y + bounds.bottom);
-    }
-
-    // More padding when expanded
-    const padding = 40 * worldAreaScale;
-    const spanX = Math.max(1, maxX - minX);
-    const spanY = Math.max(1, maxY - minY);
-    // Don't over-magnify a nearly empty graph; just centre it.
-    const scale = clamp(
-        Math.min((canvas.width - padding * 2) / spanX, (canvas.height - padding * 2) / spanY),
-        camera.minScale,
-        Math.min(camera.maxScale, 2) / Math.sqrt(worldAreaScale)
     );
 
     camera.scale = scale;
@@ -554,13 +497,9 @@ canvas.addEventListener('mousemove', (e) => {
         }
     }
     canvas.style.cursor = 'grabbing';
-    // Clamp in world space to fixed world bounds (walls independent of camera)
-    const worldMinX = 60 + draggedHost.radius;
-    const worldMaxX = 20000 - 60 - draggedHost.radius;
-    const worldMinY = 80 + draggedHost.radius;
-    const worldMaxY = 20000 - 80 - draggedHost.radius;
-    draggedHost.x = clamp(pos.x - dragOffsetX, worldMinX, worldMaxX);
-    draggedHost.y = clamp(pos.y - dragOffsetY, worldMinY, worldMaxY);
+    draggedHost.x = pos.x - dragOffsetX;
+    draggedHost.y = pos.y - dragOffsetY;
+    expandWorldFor(draggedHost);
     needRedraw = true;
 });
 
@@ -705,12 +644,9 @@ canvas.addEventListener('touchmove', (e) => {
             dragMoved = true;
         }
         const pos = screenToWorld(points[0]);
-        const worldMinX = 60 + draggedHost.radius;
-        const worldMaxX = 20000 - 60 - draggedHost.radius;
-        const worldMinY = 80 + draggedHost.radius;
-        const worldMaxY = 20000 - 80 - draggedHost.radius;
-        draggedHost.x = clamp(pos.x - dragOffsetX, worldMinX, worldMaxX);
-        draggedHost.y = clamp(pos.y - dragOffsetY, worldMinY, worldMaxY);
+        draggedHost.x = pos.x - dragOffsetX;
+        draggedHost.y = pos.y - dragOffsetY;
+        expandWorldFor(draggedHost);
         needRedraw = true;
     }
 }, { passive: false });
@@ -874,20 +810,6 @@ let lastEdgeCount = -1;
 let draggedHost = null;
 let dragOffsetX = 0;
 let dragOffsetY = 0;
-
-// Visualization area/world bounds - expands when screen is full
-// World bounds define the allowed area hosts can move in (independent of camera view)
-let worldBounds = {
-    minX: -Infinity,
-    maxX: Infinity,
-    minY: -Infinity,
-    maxY: Infinity,
-    enabled: false
-};
-let baseWorldMargin = { left: 60, right: 60, top: 80, bottom: 80 };
-let worldAreaScale = 1.0;
-const WORLD_AREA_SCALE_STEP = 1.3;
-const WORLD_AREA_SCALE_MAX = 8.0;
 
 function edgeKey(src, dst) {
     return src + '->' + dst;
@@ -1831,13 +1753,6 @@ function runPhysics(stepDt) {
     const dragFactor = Math.exp(-dt / Math.max(0.01, settings.dampening || 0.25));
     const cDrag = Math.max(0, settings.constantDrag || 0);
     const cDragFactor = cDrag > 0 ? Math.exp(-cDrag * dt * 60) : 1;
-    // Walls are fixed in world space (independent of camera zoom/pan)
-    const wallLeft = 60;
-    const wallRight = 60;
-    const wallTop = 80;
-    const wallBottom = 80;
-    const worldMaxX = 20000;
-    const worldMaxY = 20000;
     for (let i = 0; i < hostArray.length; i++) {
         const host = hostArray[i];
         if (host === draggedHost) continue;
@@ -1857,34 +1772,21 @@ function runPhysics(stepDt) {
         host.x += host.vx * dt * 60;
         host.y += host.vy * dt * 60;
 
-        const minX = wallLeft + host.radius;
-        const maxX = worldMaxX - wallRight - host.radius;
-        const minY = wallTop + host.radius;
-        const maxY = worldMaxY - wallBottom - host.radius;
-        if (host.x < minX) {
-            host.x = minX;
-            host.vx = -host.vx * 0.6;
-        } else if (host.x > maxX) {
-            host.x = maxX;
-            host.vx = -host.vx * 0.6;
-        }
-        if (host.y < minY) {
-            host.y = minY;
-            host.vy = -host.vy * 0.6;
-        } else if (host.y > maxY) {
-            host.y = maxY;
-            host.vy = -host.vy * 0.6;
-        }
+        // Grow the world outward from its centre instead of bouncing the
+        // host off a wall. Expansion keeps the host inside, so no clamp or
+        // velocity reflection is needed.
+        expandWorldFor(host);
     }
 
-    // Gently pull every blob toward the centre of the visible world so
-    // weakly connected components cannot drift away indefinitely. This is a
-    // positional spring, applied after the sleep check so a low centering
-    // impulse is not discarded before it has a chance to act.
+    // Gently pull every blob toward the centre of the world so weakly
+    // connected components cannot drift away indefinitely. This is also the
+    // point the world expands around. This is a positional spring, applied
+    // after the sleep check so a low centering impulse is not discarded
+    // before it has a chance to act.
     const centering = typeof settings.centeringForce === 'number' ? settings.centeringForce : 0;
     if (centering > 0) {
-        const centerX = canvas.width / 2;
-        const centerY = canvas.height / 2;
+        const centerX = world.centerX;
+        const centerY = world.centerY;
         for (let i = 0; i < hostArray.length; i++) {
             const host = hostArray[i];
             if (host === draggedHost) continue;
@@ -1978,6 +1880,13 @@ function runPhysics(stepDt) {
             }
         }
     }
+
+    // Collision resolution can also push a host past an edge, so make sure
+    // the world contains every host after all forces have been applied.
+    for (let i = 0; i < hostArray.length; i++) {
+        expandWorldFor(hostArray[i]);
+    }
+
     hostArrayDirty = true;
 }
 
@@ -2003,11 +1912,6 @@ function animate() {
 
     if (didPhysics || needRedraw || particles.length > 0) {
         needRedraw = false;
-    }
-
-    // Check if screen is full and adjust visualization area (walls independent of camera)
-    if (didPhysics) {
-        checkScreenFullAndAdjust();
     }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
