@@ -757,7 +757,7 @@ const serverIPs = new Set();
 // Maximum number of in-flight particles. Once this budget is reached, new
 // packet particles are sampled (skipped) instead of evicting particles that
 // are still travelling toward their destination.
-const MAX_PARTICLES = 300;
+const MAX_PARTICLES = 400;
 
 // Bound the per-frame packet queue so a backgrounded tab cannot accumulate
 // traffic indefinitely if requestAnimationFrame is paused.
@@ -946,7 +946,7 @@ const settings = {
     dampening: 2.0,
     constantDrag: 1.0,
     centeringForce: 0.001,
-    packetSpeed: 0.005,
+    packetSpeed: 0.008,
     packetSizeScale: 0.3,
     minHostSize: 5,
     maxHostSize: 44,
