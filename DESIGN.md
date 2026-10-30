@@ -61,8 +61,9 @@ WebSocket messages are wrapped as:
     organization (`org-name`, `OrgName`, `organization`, `owner`, `descr`, or
     `netname`) and country (`country`, `country-code`, or `country code`).
   - The graph host record carries `hostname`, `organization`, and `country`.
-    The canvas label uses the hostname for local hosts and the organization for
-    external hosts, falling back to the hostname when no organization is known.
+    The canvas label uses the hostname for local hosts and external hosts
+    alike, falling back to the organization when no hostname is known. Long
+    labels are truncated to their last two dotted portions.
   - If no name is available the label is left empty. Resolution results are
     pushed to clients as `host` messages and fill in the label and host info
     window when they arrive.

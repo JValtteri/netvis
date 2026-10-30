@@ -1016,13 +1016,27 @@ function isLocalIP(ip) {
 }
 
 function displayHostname(host) {
-    // External hosts use their whois organization as the label (falling back
-    // to reverse DNS); local hosts just use their reversed-DNS hostname.
-    const name = isLocalIP(host.ip) ? host.hostname : (host.organization || host.hostname);
+    // Both local and external hosts show their reverse-DNS hostname, with the
+    // whois organization as a fallback when no hostname is known.
+    const name = isLocalIP(host.ip) ? host.hostname : (host.hostname || host.organization);
     if (!name) {
         return '';
     }
-    return name.length > 16 ? name.substring(0, 13) + '...' : name;
+    return truncateLabel(name);
+}
+
+// Human-friendly label truncation. Short names are shown in full. Longer
+// dotted names keep their last two portions (e.g. "...googleusercontent.com"),
+// the more recognisable part, and anything else is head-truncated.
+function truncateLabel(name) {
+    if (name.length <= 16) {
+        return name;
+    }
+    const parts = name.split('.');
+    if (parts.length >= 2) {
+        return '...' + parts.slice(-2).join('.');
+    }
+    return name.substring(0, 13) + '...';
 }
 
 // Long IPv6 addresses are truncated for display; the full address is still

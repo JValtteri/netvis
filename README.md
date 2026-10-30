@@ -5,8 +5,9 @@ network interface with libpcap, aggregates them into a host/connection graph, an
 streams updates to a browser-based 2D canvas over WebSockets.
 
 - Hosts are drawn as blobs labelled with their IP address and a display name:
-  reverse-DNS hostname for local hosts, whois organization name for external
-  hosts, falling back to reverse DNS when no organization is available.
+  reverse-DNS hostname for both local and external hosts, falling back to the
+  whois organization when no hostname is available. Long host names are
+  truncated to their last two dotted portions (e.g. `...googleusercontent.com`).
 - Hovering a host for 0.5 s or clicking it opens an info window with its IP,
   hostname, organization, country, packet count, data totals, and last active
   time. Clicking a field copies it; clicking outside closes the window.
