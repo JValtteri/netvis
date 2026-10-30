@@ -1511,30 +1511,72 @@ function handleMessage(msg) {
             }
         }
         updateStats();
+    } else if (msg.type === 'traffic') {
+        enqueueTraffic(msg.data);
+        needRedraw = true;
     } else if (msg.type === 'packet') {
-        // Packet events are applied once per animation frame. This keeps the
-        // per-message path cheap and avoids DOM/style work for every packet.
-        pendingPackets.push(msg.data);
-        if (pendingPackets.length > MAX_PENDING_PACKETS) {
-            pendingPackets.splice(0, pendingPackets.length - MAX_PENDING_PACKETS);
-        }
+        // Backward compatibility with servers that send one event per packet.
+        // Aggregate it into the same shape used for `traffic` records.
+        enqueueTraffic(msg.data);
         needRedraw = true;
     }
 }
 
-function spawnParticle(ev) {
+function enqueueTraffic(data) {
+    if (Array.isArray(data)) {
+        for (let i = 0; i < data.length; i++) {
+            enqueueTrafficRecord(data[i]);
+        }
+    } else {
+        enqueueTrafficRecord(data);
+    }
+}
+
+function enqueueTrafficRecord(record) {
+    if (!record || !record.srcIP || !record.dstIP) {
+        return;
+    }
+    pendingPackets.push(record);
+    if (pendingPackets.length > MAX_PENDING_PACKETS) {
+        pendingPackets.splice(0, pendingPackets.length - MAX_PENDING_PACKETS);
+    }
+}
+
+// Returns true when the record is part of a NetVis frontend connection. New
+// servers set `frontend` directly; older per-packet events are detected from
+// the ports here.
+function recordIsFrontend(record) {
+    if (record.frontend === true) {
+        return true;
+    }
+    if (record.frontend === false) {
+        return false;
+    }
+    if (webPort > 0 && record.proto === 'TCP') {
+        const srcIsServer = serverIPs.has(record.srcIP);
+        const dstIsServer = serverIPs.has(record.dstIP);
+        if (srcIsServer && record.srcPort === webPort) {
+            frontendConnections.add(frontendKey(record.dstIP, record.srcIP));
+        } else if (dstIsServer && record.dstPort === webPort) {
+            frontendConnections.add(frontendKey(record.srcIP, record.dstIP));
+        }
+    }
+    return isFrontendTraffic(record.srcIP, record.dstIP);
+}
+
+function spawnParticle(record, bytes) {
     if (particles.length >= MAX_PARTICLES) {
         // Sample rather than evict: existing particles keep travelling until
         // they reach their destination.
         return;
     }
     particles.push({
-        srcIP: ev.srcIP,
-        dstIP: ev.dstIP,
+        srcIP: record.srcIP,
+        dstIP: record.dstIP,
         progress: 0,
         speed: settings.packetSpeed,
-        size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)) * settings.packetSizeScale,
-        color: protocolColors[ev.proto] || protocolColors.OTHER
+        size: Math.max(2, Math.min(8, Math.log10(bytes + 1) * 3)) * settings.packetSizeScale,
+        color: protocolColors[record.proto] || protocolColors.OTHER
     });
 }
 
@@ -1543,47 +1585,43 @@ function processPendingPackets() {
         return;
     }
 
-    const packets = pendingPackets;
+    const records = pendingPackets;
     pendingPackets = [];
     const now = Date.now();
 
-    for (let i = 0; i < packets.length; i++) {
-        const ev = packets[i];
-        const srcHost = getOrCreateHost(ev.srcIP, [ev.dstIP]);
-        const dstHost = getOrCreateHost(ev.dstIP, [ev.srcIP]);
+    for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        const count = Math.max(1, record.count || 1);
+        const bytes = Math.max(0, record.bytes || 0);
+        const srcHost = getOrCreateHost(record.srcIP, [record.dstIP]);
+        const dstHost = getOrCreateHost(record.dstIP, [record.srcIP]);
 
-        srcHost.sentCount = (srcHost.sentCount || 0) + 1;
-        dstHost.receivedCount = (dstHost.receivedCount || 0) + 1;
-        srcHost.bytesSent = (srcHost.bytesSent || 0) + ev.bytes;
-        dstHost.bytesReceived = (dstHost.bytesReceived || 0) + ev.bytes;
+        srcHost.sentCount = (srcHost.sentCount || 0) + count;
+        dstHost.receivedCount = (dstHost.receivedCount || 0) + count;
+        srcHost.bytesSent = (srcHost.bytesSent || 0) + bytes;
+        dstHost.bytesReceived = (dstHost.bytesReceived || 0) + bytes;
         srcHost.lastSentAt = now;
         srcHost.lastActivityAt = now;
         dstHost.lastActivityAt = now;
 
-        const key = edgeKey(ev.srcIP, ev.dstIP);
+        const key = edgeKey(record.srcIP, record.dstIP);
         const edge = edges.get(key);
         if (edge) {
-            edge.count++;
-            edge.bytes += ev.bytes;
+            edge.count += count;
+            edge.bytes += bytes;
         } else {
-            edges.set(key, { srcIP: ev.srcIP, dstIP: ev.dstIP, count: 1, bytes: ev.bytes });
+            edges.set(key, { srcIP: record.srcIP, dstIP: record.dstIP, count: count, bytes: bytes });
         }
 
-        // Track connections to/from the NetVis web frontend (HTTP/WebSocket).
-        if (webPort > 0 && ev.proto === 'TCP') {
-            const srcIsServer = serverIPs.has(ev.srcIP);
-            const dstIsServer = serverIPs.has(ev.dstIP);
-            if (srcIsServer && ev.srcPort === webPort) {
-                frontendConnections.add(frontendKey(ev.dstIP, ev.srcIP));
-            } else if (dstIsServer && ev.dstPort === webPort) {
-                frontendConnections.add(frontendKey(ev.srcIP, ev.dstIP));
+        if (!recordIsFrontend(record)) {
+            // One aggregate can represent many packets. Spawn a small sample so
+            // the animation still shows activity without scaling client work
+            // with the packet rate.
+            const spawnCount = Math.min(count, 4);
+            const averageBytes = count > 0 ? bytes / count : bytes;
+            for (let n = 0; n < spawnCount; n++) {
+                spawnParticle(record, averageBytes);
             }
-        }
-
-        // Only connections that use the NetVis frontend are represented by a
-        // glowing edge; don't animate individual particles for them.
-        if (!isFrontendTraffic(ev.srcIP, ev.dstIP)) {
-            spawnParticle(ev);
         }
     }
 

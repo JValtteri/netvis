@@ -24,8 +24,13 @@ packets.
 
 ```
 libpcap ──► capture.Event ──┬──► graph.Apply ──► snapshot (on connect)
-                            └──► hub.BroadcastEvent ──► WebSocket ──► canvas
+                            └──► hub.BroadcastEvent ──► 16 ms aggregate ──► traffic ──► WebSocket
 ```
+
+`hub.BroadcastEvent` folds each event into a per-edge/protocol `traffic` record
+for the current 16 ms window instead of forwarding the event itself. The
+frontend therefore receives work proportional to the number of active
+edge/protocol pairs in a window, not the number of packets.
 
 ### Event model
 
@@ -41,15 +46,36 @@ Each captured packet becomes an event:
 }
 ```
 
+The hub aggregates events by `(srcIP, dstIP, proto, frontend)` into records:
+
+```json
+{
+  "srcIP": "192.168.1.10",
+  "dstIP": "93.184.216.34",
+  "proto": "TCP",
+  "count": 128,
+  "bytes": 181760,
+  "frontend": true
+}
+```
+
+`frontend` is omitted for ordinary traffic and set for TCP connections to the
+NetVis web port; keeping it in the key means UI traffic is never merged with
+other traffic on the same edge.
+
 WebSocket messages are wrapped as:
 
-- `{"type": "packet", "data": <event>}`
-- `{"type": "batch", "data": [<message>, ...]}` — packet and host messages are
+- `{"type": "traffic", "data": [<record>, ...]}` — one aggregate per active
+  edge/protocol in the 16 ms window.
+- `{"type": "batch", "data": [<message>, ...]}` — traffic and host messages are
   collected into a fixed 16 ms window (bounded to 2048 messages) before being
-  sent to clients.
+  sent to clients. A traffic message is always placed first.
 - `{"type": "snapshot", "data": {"hosts": [...], "edges": [...], "serverIPs": [...], "webPort": 8080}}`
 - `{"type": "host", "data": <host>}` — sent when a host's display name is resolved
   asynchronously.
+
+The frontend still accepts legacy `{"type": "packet", "data": <event>}` messages
+and normalizes them to one-record aggregates.
 
 ## Visualization
 
@@ -96,14 +122,15 @@ WebSocket messages are wrapped as:
 
 ### Packets
 
-- Each packet becomes a particle travelling from source to destination, except
-  TCP connections to the NetVis frontend, which have no particles (the glowing
-  edge represents them).
-- At high packet rates the renderer keeps a bounded visual budget (300 in-flight
-  particles) and samples new packets instead of evicting particles that are
+- Each aggregated traffic record spawns a sampled particle from source to
+  destination, except TCP connections to the NetVis frontend, which have no
+  particles (the glowing edge represents them). Each record spawns at most four
+  particles, so a busy pair still shows sustained motion.
+- At high packet rates the renderer keeps a bounded visual budget (400 in-flight
+  particles) and samples new particles instead of evicting particles that are
   still travelling. Each particle may therefore represent more than one packet,
   but every spawned particle reaches its destination.
-- Packet events are queued and applied once per animation frame, so per-packet
+- Traffic records are queued and applied once per animation frame, so per-message
   JavaScript work does not scale with host/edge updates or DOM writes.
 - Particle position is recalculated from the live host positions every frame, so
   fast-moving hosts are not missed.
@@ -213,7 +240,7 @@ frontend, and integration steps below are complete.
 
 ### 4) Backend server (API + realtime)
 - [x] HTTP server serving static frontend.
-- [x] WebSocket hub streaming packet events and initial snapshots.
+- [x] WebSocket hub streaming aggregated traffic records and initial snapshots.
 - [x] Ping/pong keepalive and slow-client handling.
 - [x] Same-origin usage; permissive origin check for local development.
 
@@ -252,11 +279,18 @@ frontend, and integration steps below are complete.
       postpone indefinitely.
 - [x] Remove client-map deletions from an `RLock` path so slow-client cleanup
       cannot race with broadcasts.
+- [x] Aggregate traffic server-side per directed edge, protocol, and frontend
+      flag over each 16 ms window, sending packet counts and byte totals instead
+      of one event per packet. Bandwidth and client work now scale with active
+      graph elements rather than packet rate.
+- [x] Remove the hub's per-message JSON unmarshal/re-marshal in `flushBatch`.
+      Traffic aggregates are marshaled once and host messages are appended to
+      the batch as pre-serialized fragments.
 - [x] Pre-rendered, cached glow sprites for packet particles (no per-particle
       `shadowBlur`).
 - [x] Bounded particle budget with packet sampling instead of evicting the
       oldest in-flight particles.
-- [x] Apply packet events once per animation frame, with a bounded pending
+- [x] Apply traffic records once per animation frame, with a bounded pending
       queue for backgrounded tabs, and update stats/host sizes only when values
       change rather than per packet.
 - [x] Frame-rate-independent particle motion.
@@ -266,13 +300,8 @@ frontend, and integration steps below are complete.
 
 ### Remaining performance improvement ideas
 
-- [ ] Aggregate traffic server-side per edge and protocol over each broadcast
-      window, sending packet counts and byte totals instead of one event per
-      packet. This makes bandwidth and client work scale with graph size rather
-      than packet rate.
-- [ ] Replace the hub's per-message JSON unmarshal/re-marshal in `flushBatch`
-      with pre-serialized fragments or a single marshal of aggregated records;
-      consider compact array records or binary encoding.
+- [ ] Consider compact array records or binary encoding for traffic messages on
+      very large graphs.
 - [ ] Cache label measurements/bounds per host, keyed by label text and rounded
       radius, and avoid clearing the whole cache whenever a radius changes.
       Reuse the cached measurements while drawing instead of calling

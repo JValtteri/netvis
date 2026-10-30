@@ -12,12 +12,13 @@ streams updates to a browser-based 2D canvas over WebSockets.
   hostname, organization, country, packet count, data totals, and last active
   time. Clicking a field copies it; clicking outside closes the window.
 - Each unique source → destination IP pair becomes an edge.
-- Captured packets are animated as particles travelling along their edges; the
-  colour encodes the protocol and the size encodes the packet size. Under high
-  packet rates a bounded particle budget samples packets, so one particle may
-  represent several packets while every spawned particle reaches its
-  destination. Traffic between the NetVis server itself and other hosts is shown
-  as a thin glowing yellow edge instead of individual particles.
+- Captured packets are aggregated per edge and protocol over a 16 ms window, then
+  animated as particles travelling along their edges; the colour encodes the
+  protocol and the size encodes the average packet size. Each aggregate spawns a
+  small number of sampled particles, so one particle may represent several
+  packets while every spawned particle reaches its destination. Traffic between
+  the NetVis server itself and other hosts is shown as a thin glowing yellow edge
+  instead of individual particles.
 
 ## Requirements
 
@@ -60,8 +61,9 @@ go test -race ./...
 ```
 
 Tests cover packet parsing, graph aggregation and snapshot isolation, display-name
-resolution caching, whois response parsing, and WebSocket hub message routing.
-Network-dependent lookups are stubbed in tests.
+resolution caching, whois response parsing, and WebSocket hub message routing,
+including traffic aggregation and frontend-traffic separation. Network-dependent
+lookups are stubbed in tests.
 
 ## Run
 
@@ -186,11 +188,13 @@ DESIGN.md            Design document and implementation notes
    (via IANA referral to the responsible RIR) for external addresses. Resolved
    details are streamed to clients as `host` messages and fill in the label and
    host info window when they arrive.
-3. `server` collects events into a fixed 16 ms window, broadcasts each batch to
-   connected WebSocket clients, and sends a full snapshot when a client connects.
-4. The frontend renders the snapshot, then applies queued live packet events once
-   per animation frame, animating a bounded set of particles and running a simple
-   force layout on the canvas.
+3. `server` aggregates events per directed edge, protocol, and frontend flag
+   over a fixed 16 ms window, broadcasts compact `traffic` records (with host
+   messages batched alongside them), and sends a full snapshot when a client
+   connects.
+4. The frontend renders the snapshot, then applies queued traffic records once
+   per animation frame, animating a bounded set of sampled particles and running
+   a simple force layout on the canvas.
 
 ## Troubleshooting
 

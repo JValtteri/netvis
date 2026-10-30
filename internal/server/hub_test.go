@@ -68,7 +68,7 @@ func TestDetectServerIPs(t *testing.T) {
 	}
 }
 
-func TestHubBroadcastsPackets(t *testing.T) {
+func TestHubAggregatesPackets(t *testing.T) {
 	g := graph.New()
 	hub := NewHub(g, ":3993")
 	go hub.Run()
@@ -85,15 +85,113 @@ func TestHubBroadcastsPackets(t *testing.T) {
 	})
 
 	msg := nextMessage(t, client.send)
-	if msg.Type != "packet" {
-		t.Fatalf("message type = %q, want packet", msg.Type)
+	if msg.Type != "traffic" {
+		t.Fatalf("message type = %q, want traffic", msg.Type)
 	}
-	var ev capture.Event
-	if err := json.Unmarshal(msg.Data, &ev); err != nil {
-		t.Fatalf("unmarshal event: %v", err)
+	var records []trafficRecord
+	if err := json.Unmarshal(msg.Data, &records); err != nil {
+		t.Fatalf("unmarshal traffic: %v", err)
 	}
-	if ev.Proto != "UDP" || ev.Bytes != 42 {
-		t.Errorf("unexpected event: %+v", ev)
+	if len(records) != 1 {
+		t.Fatalf("traffic records = %d, want 1: %+v", len(records), records)
+	}
+	record := records[0]
+	if record.SrcIP != "10.0.0.1" || record.DstIP != "8.8.8.8" ||
+		record.Proto != "UDP" || record.Count != 1 || record.Bytes != 42 {
+		t.Errorf("unexpected traffic record: %+v", record)
+	}
+}
+
+func TestHubAggregatesRepeatedTraffic(t *testing.T) {
+	g := graph.New()
+	hub := NewHub(g, ":3993")
+
+	const events = 100
+	for i := 0; i < events; i++ {
+		hub.BroadcastEvent(capture.Event{
+			SrcIP: "10.0.0.1",
+			DstIP: "8.8.8.8",
+			Proto: "TCP",
+			Bytes: 100,
+		})
+	}
+
+	records := hub.takeTraffic()
+	if len(records) != 1 {
+		t.Fatalf("traffic records = %d, want 1: %+v", len(records), records)
+	}
+	record := records[0]
+	if record.Count != events {
+		t.Errorf("aggregated count = %d, want %d", record.Count, events)
+	}
+	if record.Bytes != events*100 {
+		t.Errorf("aggregated bytes = %d, want %d", record.Bytes, events*100)
+	}
+	if record.SrcIP != "10.0.0.1" || record.DstIP != "8.8.8.8" || record.Proto != "TCP" {
+		t.Errorf("unexpected traffic record: %+v", record)
+	}
+}
+
+func TestHubSeparatesFrontendTraffic(t *testing.T) {
+	g := graph.New()
+	hub := NewHub(g, ":3993")
+	go hub.Run()
+
+	client := &Client{hub: hub, send: make(chan []byte, 4096)}
+	hub.register <- client
+	nextMessage(t, client.send) // initial snapshot
+
+	if len(hub.serverIPs) == 0 {
+		t.Skip("no local interface address available")
+	}
+	serverIP := hub.serverIPs[0]
+
+	// Same directed edge and protocol, but only one packet belongs to the UI.
+	hub.BroadcastEvent(capture.Event{
+		SrcIP: serverIP, DstIP: "8.8.8.8", SrcPort: 3993, DstPort: 443, Proto: "TCP", Bytes: 10,
+	})
+	hub.BroadcastEvent(capture.Event{
+		SrcIP: serverIP, DstIP: "8.8.8.8", SrcPort: 55000, DstPort: 443, Proto: "TCP", Bytes: 20,
+	})
+
+	records := make([]trafficRecord, 0, 2)
+	deadline := time.After(2 * time.Second)
+	for len(records) < 2 {
+		select {
+		case raw := <-client.send:
+			var msg wsMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				t.Fatalf("unmarshal message: %v", err)
+			}
+			if msg.Type != "traffic" {
+				continue
+			}
+			var batch []trafficRecord
+			if err := json.Unmarshal(msg.Data, &batch); err != nil {
+				t.Fatalf("unmarshal traffic: %v", err)
+			}
+			records = append(records, batch...)
+		case <-deadline:
+			t.Fatalf("timed out waiting for traffic records: %+v", records)
+		}
+	}
+
+	var frontend, regular *trafficRecord
+	for i := range records {
+		if records[i].Frontend {
+			frontend = &records[i]
+		} else {
+			regular = &records[i]
+		}
+	}
+	if frontend == nil || regular == nil {
+		t.Fatalf("expected separate frontend and regular records: %+v", records)
+	}
+	if frontend.Count != 1 || frontend.Bytes != 10 {
+		t.Errorf("unexpected frontend aggregate: %+v", frontend)
+	}
+	if regular.Count != 1 || regular.Bytes != 20 {
+		t.Errorf("unexpected regular aggregate: %+v", regular)
 	}
 }
 

@@ -22,6 +22,26 @@ const (
 	maxBatchEvents = 2048
 )
 
+// trafficKey identifies one aggregated traffic stream: a directed host pair,
+// protocol, and whether the packet is part of a NetVis frontend connection.
+// Keeping the frontend flag in the key prevents frontend traffic from being
+// merged with ordinary traffic on the same edge.
+type trafficKey struct {
+	SrcIP    string
+	DstIP    string
+	Proto    string
+	Frontend bool
+}
+
+type trafficRecord struct {
+	SrcIP    string `json:"srcIP"`
+	DstIP    string `json:"dstIP"`
+	Proto    string `json:"proto"`
+	Frontend bool   `json:"frontend,omitempty"`
+	Count    int    `json:"count"`
+	Bytes    int64  `json:"bytes"`
+}
+
 type Hub struct {
 	clients      map[*Client]bool
 	broadcast    chan []byte
@@ -32,18 +52,22 @@ type Hub struct {
 	webPort      int
 	mu           sync.RWMutex
 	pendingBatch [][]byte
+
+	trafficMu      sync.Mutex
+	pendingTraffic map[trafficKey]*trafficRecord
 }
 
 func NewHub(g *graph.Graph, addr string) *Hub {
 	h := &Hub{
-		clients:      make(map[*Client]bool),
-		broadcast:    make(chan []byte),
-		register:     make(chan *Client),
-		unregister:   make(chan *Client),
-		g:            g,
-		serverIPs:    detectServerIPs(),
-		webPort:      extractPort(addr),
-		pendingBatch: make([][]byte, 0, 32),
+		clients:        make(map[*Client]bool),
+		broadcast:      make(chan []byte),
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		g:              g,
+		serverIPs:      detectServerIPs(),
+		webPort:        extractPort(addr),
+		pendingBatch:   make([][]byte, 0, 32),
+		pendingTraffic: make(map[trafficKey]*trafficRecord),
 	}
 	return h
 }
@@ -142,38 +166,90 @@ func (h *Hub) Run() {
 }
 
 func (h *Hub) flushBatch() {
-	if len(h.pendingBatch) == 0 {
+	traffic := h.takeTraffic()
+	if len(traffic) == 0 && len(h.pendingBatch) == 0 {
 		return
 	}
 	batch := h.pendingBatch
 	h.pendingBatch = make([][]byte, 0, 32)
 
-	if len(batch) == 1 {
-		h.broadcastDirect(batch[0])
-		return
-	}
-
-	payload := make([]map[string]json.RawMessage, 0, len(batch))
-	for _, b := range batch {
-		var m map[string]json.RawMessage
-		if json.Unmarshal(b, &m) == nil {
-			payload = append(payload, m)
+	messages := make([]json.RawMessage, 0, len(batch)+1)
+	if len(traffic) > 0 {
+		payload, err := json.Marshal(struct {
+			Type string          `json:"type"`
+			Data []trafficRecord `json:"data"`
+		}{
+			Type: "traffic",
+			Data: traffic,
+		})
+		if err == nil {
+			messages = append(messages, json.RawMessage(payload))
 		}
 	}
-	if len(payload) == 0 {
+	for _, b := range batch {
+		messages = append(messages, json.RawMessage(b))
+	}
+	if len(messages) == 0 {
 		return
 	}
-	wrapped, err := json.Marshal(map[string]interface{}{
-		"type": "batch",
-		"data": payload,
+	if len(messages) == 1 {
+		h.broadcastDirect(messages[0])
+		return
+	}
+	wrapped, err := json.Marshal(struct {
+		Type string            `json:"type"`
+		Data []json.RawMessage `json:"data"`
+	}{
+		Type: "batch",
+		Data: messages,
 	})
 	if err != nil {
-		for _, b := range batch {
-			h.broadcastDirect(b)
+		for _, msg := range messages {
+			h.broadcastDirect(msg)
 		}
 		return
 	}
 	h.broadcastDirect(wrapped)
+}
+
+// takeTraffic atomically swaps out the current aggregate window. BroadcastEvent
+// runs on the capture goroutine while flushBatch runs on the hub goroutine, so
+// the map needs its own lock.
+func (h *Hub) takeTraffic() []trafficRecord {
+	h.trafficMu.Lock()
+	defer h.trafficMu.Unlock()
+
+	if len(h.pendingTraffic) == 0 {
+		return nil
+	}
+	records := make([]trafficRecord, 0, len(h.pendingTraffic))
+	for _, record := range h.pendingTraffic {
+		records = append(records, *record)
+	}
+	h.pendingTraffic = make(map[trafficKey]*trafficRecord)
+	return records
+}
+
+func (h *Hub) isServerIP(ip string) bool {
+	for _, serverIP := range h.serverIPs {
+		if serverIP == ip {
+			return true
+		}
+	}
+	return false
+}
+
+// isFrontendEvent reports whether the packet belongs to a connection to the
+// NetVis web UI. The frontend uses this flag to draw the connection as a
+// glowing edge instead of spawning particles.
+func (h *Hub) isFrontendEvent(ev capture.Event) bool {
+	if h.webPort <= 0 || ev.Proto != "TCP" {
+		return false
+	}
+	if h.isServerIP(ev.SrcIP) && ev.SrcPort == h.webPort {
+		return true
+	}
+	return h.isServerIP(ev.DstIP) && ev.DstPort == h.webPort
 }
 
 func (h *Hub) broadcastDirect(msg []byte) {
@@ -192,14 +268,27 @@ func (h *Hub) broadcastDirect(msg []byte) {
 }
 
 func (h *Hub) BroadcastEvent(ev capture.Event) {
-	b, err := json.Marshal(map[string]interface{}{
-		"type": "packet",
-		"data": ev,
-	})
-	if err != nil {
-		return
+	key := trafficKey{
+		SrcIP:    ev.SrcIP,
+		DstIP:    ev.DstIP,
+		Proto:    ev.Proto,
+		Frontend: h.isFrontendEvent(ev),
 	}
-	h.broadcast <- b
+
+	h.trafficMu.Lock()
+	record := h.pendingTraffic[key]
+	if record == nil {
+		record = &trafficRecord{
+			SrcIP:    ev.SrcIP,
+			DstIP:    ev.DstIP,
+			Proto:    ev.Proto,
+			Frontend: key.Frontend,
+		}
+		h.pendingTraffic[key] = record
+	}
+	record.Count++
+	record.Bytes += int64(ev.Bytes)
+	h.trafficMu.Unlock()
 }
 
 // BroadcastHost sends an updated host (e.g. after its hostname or whois
