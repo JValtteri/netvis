@@ -10,8 +10,6 @@ import (
 	"netvis/internal/graph"
 )
 
-
-
 type wsMessage struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
@@ -97,6 +95,45 @@ func TestHubBroadcastsPackets(t *testing.T) {
 	if ev.Proto != "UDP" || ev.Bytes != 42 {
 		t.Errorf("unexpected event: %+v", ev)
 	}
+}
+
+func TestHubFlushesSustainedTraffic(t *testing.T) {
+	g := graph.New()
+	hub := NewHub(g, ":3993")
+	go hub.Run()
+
+	client := &Client{hub: hub, send: make(chan []byte, 4096)}
+	hub.register <- client
+	nextMessage(t, client.send) // initial snapshot
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				hub.BroadcastEvent(capture.Event{
+					SrcIP: "10.0.0.1", DstIP: "8.8.8.8", Proto: "TCP", Bytes: 1400,
+				})
+			}
+		}
+	}()
+
+	select {
+	case <-client.send:
+		// A message arrived while traffic was still flowing.
+	case <-time.After(250 * time.Millisecond):
+		close(stop)
+		<-done
+		t.Fatal("no batch flushed during sustained traffic; the flush window is being postponed")
+	}
+	close(stop)
+	<-done
 }
 
 func TestHubBroadcastsHostUpdates(t *testing.T) {

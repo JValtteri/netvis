@@ -751,7 +751,17 @@ document.getElementById('fitView').addEventListener('click', fitToView);
 const hosts = new Map();
 const edges = new Map();
 const particles = [];
+let pendingPackets = [];
 const serverIPs = new Set();
+
+// Maximum number of in-flight particles. Once this budget is reached, new
+// packet particles are sampled (skipped) instead of evicting particles that
+// are still travelling toward their destination.
+const MAX_PARTICLES = 300;
+
+// Bound the per-frame packet queue so a backgrounded tab cannot accumulate
+// traffic indefinitely if requestAnimationFrame is paused.
+const MAX_PENDING_PACKETS = 8192;
 
 // Cached host array - rebuilt only when hosts change
 let hostArrayCache = [];
@@ -848,6 +858,8 @@ function isFrontendTraffic(srcIP, dstIP) {
 
 const hostCountEl = document.getElementById('hostCount');
 const edgeCountEl = document.getElementById('edgeCount');
+let lastHostCount = -1;
+let lastEdgeCount = -1;
 
 let draggedHost = null;
 let dragOffsetX = 0;
@@ -877,6 +889,54 @@ const protocolColors = {
     ICMP: '#f39c12',
     OTHER: '#e74c3c'
 };
+
+// Pre-rendered packet glow sprites. Canvas shadowBlur is very expensive when
+// applied per particle, so each protocol colour gets one cached offscreen
+// sprite that is scaled to the particle size at draw time.
+const PARTICLE_SPRITE_SIZE = 64;
+const PARTICLE_SPRITE_CORE_RADIUS = 6;
+const PARTICLE_SPRITE_GLOW_RADIUS = 30;
+const particleSpriteCache = new Map();
+
+function colorWithAlpha(hex, alpha) {
+    const value = hex.replace('#', '');
+    const r = parseInt(value.substring(0, 2), 16);
+    const g = parseInt(value.substring(2, 4), 16);
+    const b = parseInt(value.substring(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function getParticleSprite(color) {
+    let sprite = particleSpriteCache.get(color);
+    if (sprite) {
+        return sprite;
+    }
+
+    const spriteCanvas = document.createElement('canvas');
+    spriteCanvas.width = PARTICLE_SPRITE_SIZE;
+    spriteCanvas.height = PARTICLE_SPRITE_SIZE;
+    const spriteCtx = spriteCanvas.getContext('2d');
+    const center = PARTICLE_SPRITE_SIZE / 2;
+    const gradient = spriteCtx.createRadialGradient(
+        center, center, 0,
+        center, center, PARTICLE_SPRITE_GLOW_RADIUS
+    );
+    const coreStop = PARTICLE_SPRITE_CORE_RADIUS / PARTICLE_SPRITE_GLOW_RADIUS;
+    gradient.addColorStop(0, colorWithAlpha(color, 1));
+    gradient.addColorStop(coreStop, colorWithAlpha(color, 1));
+    gradient.addColorStop(Math.min(1, coreStop + 0.02), colorWithAlpha(color, 0.55));
+    gradient.addColorStop(0.65, colorWithAlpha(color, 0.12));
+    gradient.addColorStop(1, colorWithAlpha(color, 0));
+    spriteCtx.fillStyle = gradient;
+    spriteCtx.fillRect(0, 0, PARTICLE_SPRITE_SIZE, PARTICLE_SPRITE_SIZE);
+
+    sprite = {
+        canvas: spriteCanvas,
+        scale: PARTICLE_SPRITE_SIZE / PARTICLE_SPRITE_CORE_RADIUS
+    };
+    particleSpriteCache.set(color, sprite);
+    return sprite;
+}
 
 const settings = {
     attractLocalLocal: 0.100,
@@ -1302,33 +1362,35 @@ function findBestHostPosition(connectedToIps) {
     return best;
 }
 
-function getHostPosition(ip) {
-    if (!hosts.has(ip)) {
-        // Try to place near edge with fewest edge crossings
-        const pos = findBestHostPosition([]);
-        hosts.set(ip, {
-            ip: ip,
-            hostname: '',
-            organization: '',
-            country: '',
-            x: pos.x,
-            y: pos.y,
-            vx: (Math.random() - 0.5) * 0.3,
-            vy: (Math.random() - 0.5) * 0.3,
-            radius: 22,
-            sentCount: 0,
-            receivedCount: 0,
-            bytesSent: 0,
-            bytesReceived: 0,
-            lastSentAt: 0,
-            lastActivityAt: Date.now(),
-            glowLevel: 0
-        });
-        hostArrayDirty = true;
-        needRedraw = true;
-        updateHostSizes();
-    }
-    return hosts.get(ip);
+function createHost(ip, connectedToIps) {
+    // Try to place near an edge shared with a connected host.
+    const pos = findBestHostPosition(connectedToIps || []);
+    const host = {
+        ip: ip,
+        hostname: '',
+        organization: '',
+        country: '',
+        x: pos.x,
+        y: pos.y,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+        radius: 22,
+        sentCount: 0,
+        receivedCount: 0,
+        bytesSent: 0,
+        bytesReceived: 0,
+        lastSentAt: 0,
+        lastActivityAt: Date.now(),
+        glowLevel: 0
+    };
+    hosts.set(ip, host);
+    hostArrayDirty = true;
+    needRedraw = true;
+    return host;
+}
+
+function getOrCreateHost(ip, connectedToIps) {
+    return hosts.get(ip) || createHost(ip, connectedToIps);
 }
 
 const ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -1426,6 +1488,9 @@ function handleMessage(msg) {
         updateHostSizes();
         updateStats();
     } else if (msg.type === 'host') {
+        // Apply queued packets first so a newly observed host exists before its
+        // asynchronous display details arrive.
+        processPendingPackets();
         const info = msg.data;
         const host = hosts.get(info.ip);
         if (host) {
@@ -1447,10 +1512,46 @@ function handleMessage(msg) {
         }
         updateStats();
     } else if (msg.type === 'packet') {
-        const ev = msg.data;
-        const srcHost = hosts.has(ev.srcIP) ? hosts.get(ev.srcIP) : (function(){ const p = findBestHostPosition([ev.dstIP]); hosts.set(ev.srcIP,{ip:ev.srcIP,hostname:'',organization:'',country:'',x:p.x,y:p.y,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,radius:22,sentCount:0,receivedCount:0,bytesSent:0,bytesReceived:0,lastSentAt:0,lastActivityAt:Date.now(),glowLevel:0}); hostArrayDirty=true; needRedraw=true; updateHostSizes(); return hosts.get(ev.srcIP); })();
-        const dstHost = hosts.has(ev.dstIP) ? hosts.get(ev.dstIP) : (function(){ const p = findBestHostPosition([ev.srcIP]); hosts.set(ev.dstIP,{ip:ev.dstIP,hostname:'',organization:'',country:'',x:p.x,y:p.y,vx:(Math.random()-0.5)*0.3,vy:(Math.random()-0.5)*0.3,radius:22,sentCount:0,receivedCount:0,bytesSent:0,bytesReceived:0,lastSentAt:0,lastActivityAt:Date.now(),glowLevel:0}); hostArrayDirty=true; needRedraw=true; updateHostSizes(); return hosts.get(ev.dstIP); })();
-        const now = Date.now();
+        // Packet events are applied once per animation frame. This keeps the
+        // per-message path cheap and avoids DOM/style work for every packet.
+        pendingPackets.push(msg.data);
+        if (pendingPackets.length > MAX_PENDING_PACKETS) {
+            pendingPackets.splice(0, pendingPackets.length - MAX_PENDING_PACKETS);
+        }
+        needRedraw = true;
+    }
+}
+
+function spawnParticle(ev) {
+    if (particles.length >= MAX_PARTICLES) {
+        // Sample rather than evict: existing particles keep travelling until
+        // they reach their destination.
+        return;
+    }
+    particles.push({
+        srcIP: ev.srcIP,
+        dstIP: ev.dstIP,
+        progress: 0,
+        speed: settings.packetSpeed,
+        size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)) * settings.packetSizeScale,
+        color: protocolColors[ev.proto] || protocolColors.OTHER
+    });
+}
+
+function processPendingPackets() {
+    if (pendingPackets.length === 0) {
+        return;
+    }
+
+    const packets = pendingPackets;
+    pendingPackets = [];
+    const now = Date.now();
+
+    for (let i = 0; i < packets.length; i++) {
+        const ev = packets[i];
+        const srcHost = getOrCreateHost(ev.srcIP, [ev.dstIP]);
+        const dstHost = getOrCreateHost(ev.dstIP, [ev.srcIP]);
+
         srcHost.sentCount = (srcHost.sentCount || 0) + 1;
         dstHost.receivedCount = (dstHost.receivedCount || 0) + 1;
         srcHost.bytesSent = (srcHost.bytesSent || 0) + ev.bytes;
@@ -1458,18 +1559,16 @@ function handleMessage(msg) {
         srcHost.lastSentAt = now;
         srcHost.lastActivityAt = now;
         dstHost.lastActivityAt = now;
-        needRedraw = true;
-        updateHostSizes();
-        
+
         const key = edgeKey(ev.srcIP, ev.dstIP);
-        if (!edges.has(key)) {
-            edges.set(key, { srcIP: ev.srcIP, dstIP: ev.dstIP, count: 1, bytes: ev.bytes });
+        const edge = edges.get(key);
+        if (edge) {
+            edge.count++;
+            edge.bytes += ev.bytes;
         } else {
-            const e = edges.get(key);
-            e.count++;
-            e.bytes += ev.bytes;
+            edges.set(key, { srcIP: ev.srcIP, dstIP: ev.dstIP, count: 1, bytes: ev.bytes });
         }
-        
+
         // Track connections to/from the NetVis web frontend (HTTP/WebSocket).
         if (webPort > 0 && ev.proto === 'TCP') {
             const srcIsServer = serverIPs.has(ev.srcIP);
@@ -1484,28 +1583,24 @@ function handleMessage(msg) {
         // Only connections that use the NetVis frontend are represented by a
         // glowing edge; don't animate individual particles for them.
         if (!isFrontendTraffic(ev.srcIP, ev.dstIP)) {
-            particles.push({
-                srcIP: ev.srcIP,
-                dstIP: ev.dstIP,
-                progress: 0,
-                speed: settings.packetSpeed,
-                size: Math.max(2, Math.min(8, Math.log10(ev.bytes + 1) * 3)) * settings.packetSizeScale,
-                color: protocolColors[ev.proto] || protocolColors.OTHER,
-                life: 1.0
-            });
-            if (particles.length > 500) {
-                particles.shift();
-            }
+            spawnParticle(ev);
         }
-        needRedraw = true;
-        
-        updateStats();
     }
+
+    updateHostSizes();
+    updateStats();
+    needRedraw = true;
 }
 
 function updateStats() {
-    hostCountEl.textContent = hosts.size;
-    edgeCountEl.textContent = edges.size;
+    if (hosts.size !== lastHostCount) {
+        lastHostCount = hosts.size;
+        hostCountEl.textContent = lastHostCount;
+    }
+    if (edges.size !== lastEdgeCount) {
+        lastEdgeCount = edges.size;
+        edgeCountEl.textContent = lastEdgeCount;
+    }
 }
 
 let lastFrameTime = performance.now();
@@ -1823,6 +1918,8 @@ function animate() {
     const dt = Math.min((frameTime - lastFrameTime) / 1000, 0.1);
     lastFrameTime = frameTime;
 
+    processPendingPackets();
+
     physicsAccumulator += dt;
     let didPhysics = false;
     while (physicsAccumulator >= PHYSICS_STEP) {
@@ -1893,16 +1990,17 @@ function animate() {
     }
     ctx.restore();
     
-    // Draw particles
+    // Draw particles using pre-rendered glow sprites. This avoids a
+    // per-particle shadowBlur, which is very expensive in Canvas2D.
     for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
-        p.progress += p.speed;
-        
+        p.progress += p.speed * dt * 60;
+
         if (p.progress >= 1) {
             particles.splice(i, 1);
             continue;
         }
-        
+
         // Follow the live host positions so packets don't miss moving hosts.
         const src = hosts.get(p.srcIP);
         const dst = hosts.get(p.dstIP);
@@ -1918,15 +2016,10 @@ function animate() {
         }
         const x = src.x + (dst.x - src.x) * p.progress;
         const y = src.y + (dst.y - src.y) * p.progress;
-        
-        ctx.beginPath();
-        ctx.arc(x, y, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = p.color;
-        ctx.fill();
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = p.color;
-        ctx.fill();
-        ctx.shadowBlur = 0;
+
+        const sprite = getParticleSprite(p.color);
+        const drawSize = p.size * sprite.scale;
+        ctx.drawImage(sprite.canvas, x - drawSize / 2, y - drawSize / 2, drawSize, drawSize);
     }
     
     // Draw hosts

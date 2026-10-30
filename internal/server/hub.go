@@ -12,19 +12,26 @@ import (
 	"netvis/internal/graph"
 )
 
+const (
+	// batchInterval bounds how long packet events wait before being sent to
+	// clients. It is deliberately a fixed window rather than a debounce, so
+	// sustained traffic cannot keep postponing the flush indefinitely.
+	batchInterval = 16 * time.Millisecond
+	// maxBatchEvents bounds the memory used by an individual batch and prevents
+	// a large burst from blocking the client for too long.
+	maxBatchEvents = 2048
+)
+
 type Hub struct {
 	clients      map[*Client]bool
 	broadcast    chan []byte
 	register     chan *Client
 	unregister   chan *Client
-	batch        chan []byte
 	g            *graph.Graph
 	serverIPs    []string
 	webPort      int
 	mu           sync.RWMutex
-	batchMu      sync.Mutex
 	pendingBatch [][]byte
-	batchTimer   *time.Timer
 }
 
 func NewHub(g *graph.Graph, addr string) *Hub {
@@ -33,7 +40,6 @@ func NewHub(g *graph.Graph, addr string) *Hub {
 		broadcast:    make(chan []byte),
 		register:     make(chan *Client),
 		unregister:   make(chan *Client),
-		batch:        make(chan []byte, 256),
 		g:            g,
 		serverIPs:    detectServerIPs(),
 		webPort:      extractPort(addr),
@@ -44,7 +50,7 @@ func NewHub(g *graph.Graph, addr string) *Hub {
 
 // extractPort parses the port from an address like ":3993", "0.0.0.0:3993", or "[::]:3993".
 func extractPort(addr string) int {
-    defaultPort := 3993
+	defaultPort := 3993
 	if addr == "" {
 		return defaultPort
 	}
@@ -98,6 +104,9 @@ func detectServerIPs() []string {
 }
 
 func (h *Hub) Run() {
+	ticker := time.NewTicker(batchInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case c := <-h.register:
@@ -121,40 +130,23 @@ func (h *Hub) Run() {
 				close(c.send)
 			}
 			h.mu.Unlock()
-		case msg := <-h.batch:
-			h.batchMu.Lock()
-			h.pendingBatch = append(h.pendingBatch, append([]byte(nil), msg...))
-			if h.batchTimer == nil {
-				h.batchTimer = time.AfterFunc(16*time.Millisecond, func() {
-					h.flushBatch()
-				})
-			} else {
-				h.batchTimer.Stop()
-				h.batchTimer.Reset(16 * time.Millisecond)
-			}
-			h.batchMu.Unlock()
 		case msg := <-h.broadcast:
-			// Route through batching to reduce message overhead
-			select {
-			case h.batch <- msg:
-			default:
-				h.broadcastDirect(msg)
+			h.pendingBatch = append(h.pendingBatch, msg)
+			if len(h.pendingBatch) >= maxBatchEvents {
+				h.flushBatch()
 			}
+		case <-ticker.C:
+			h.flushBatch()
 		}
 	}
 }
 
 func (h *Hub) flushBatch() {
-	h.batchMu.Lock()
 	if len(h.pendingBatch) == 0 {
-		h.batchTimer = nil
-		h.batchMu.Unlock()
 		return
 	}
 	batch := h.pendingBatch
 	h.pendingBatch = make([][]byte, 0, 32)
-	h.batchTimer = nil
-	h.batchMu.Unlock()
 
 	if len(batch) == 1 {
 		h.broadcastDirect(batch[0])
@@ -185,16 +177,18 @@ func (h *Hub) flushBatch() {
 }
 
 func (h *Hub) broadcastDirect(msg []byte) {
-	h.mu.RLock()
+	// All client-map mutations happen on the hub goroutine, but take the write
+	// lock so deletions can never race with a reader or another broadcast.
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	for c := range h.clients {
 		select {
 		case c.send <- msg:
 		default:
-			close(c.send)
 			delete(h.clients, c)
+			close(c.send)
 		}
 	}
-	h.mu.RUnlock()
 }
 
 func (h *Hub) BroadcastEvent(ev capture.Event) {
