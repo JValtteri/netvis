@@ -763,6 +763,16 @@ const MAX_PARTICLES = 400;
 // traffic indefinitely if requestAnimationFrame is paused.
 const MAX_PENDING_PACKETS = 8192;
 
+// Render at most this many particles per second for a single connection
+// (directed source -> destination edge). Aggregate records may represent
+// hundreds of packets, but the animation stays readable and cheap.
+const MAX_CONNECTION_PARTICLES_PER_SECOND = 13;
+
+// Per-connection particle allowance. Each entry is a token bucket holding at
+// most one token, so particles for a busy connection are spread evenly instead
+// of arriving in a burst.
+const connectionParticleBudgets = new Map();
+
 // Cached host array - rebuilt only when hosts change
 let hostArrayCache = [];
 let hostArrayDirty = true;
@@ -1564,6 +1574,24 @@ function recordIsFrontend(record) {
     return isFrontendTraffic(record.srcIP, record.dstIP);
 }
 
+// takeParticleBudget returns how many of the requested particles the connection
+// may spawn now. The bucket holds at most one token and refills at
+// MAX_CONNECTION_PARTICLES_PER_SECOND, which spreads particles out over time.
+function takeParticleBudget(key, now, requested) {
+    let state = connectionParticleBudgets.get(key);
+    if (!state) {
+        state = { tokens: 1, updatedAt: now };
+        connectionParticleBudgets.set(key, state);
+    } else {
+        const elapsed = Math.max(0, now - state.updatedAt) / 1000;
+        state.tokens = Math.min(1, state.tokens + elapsed * MAX_CONNECTION_PARTICLES_PER_SECOND);
+        state.updatedAt = now;
+    }
+    const granted = Math.min(requested, Math.floor(state.tokens));
+    state.tokens -= granted;
+    return granted;
+}
+
 function spawnParticle(record, bytes) {
     if (particles.length >= MAX_PARTICLES) {
         // Sample rather than evict: existing particles keep travelling until
@@ -1616,8 +1644,10 @@ function processPendingPackets() {
         if (!recordIsFrontend(record)) {
             // One aggregate can represent many packets. Spawn a small sample so
             // the animation still shows activity without scaling client work
-            // with the packet rate.
-            const spawnCount = Math.min(count, 4);
+            // with the packet rate. Each connection is additionally limited to
+            // MAX_CONNECTION_PARTICLES_PER_SECOND.
+            const requested = Math.min(count, 4);
+            const spawnCount = takeParticleBudget(key, now, requested);
             const averageBytes = count > 0 ? bytes / count : bytes;
             for (let n = 0; n < spawnCount; n++) {
                 spawnParticle(record, averageBytes);

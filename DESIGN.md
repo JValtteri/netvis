@@ -125,7 +125,9 @@ and normalizes them to one-record aggregates.
 - Each aggregated traffic record spawns a sampled particle from source to
   destination, except TCP connections to the NetVis frontend, which have no
   particles (the glowing edge represents them). Each record spawns at most four
-  particles, so a busy pair still shows sustained motion.
+  particles, and each connection (directed edge) is limited in particles
+  per second, so a busy pair still shows sustained motion without flooding the
+  canvas.
 - At high packet rates the renderer keeps a bounded visual budget (400 in-flight
   particles) and samples new particles instead of evicting particles that are
   still travelling. Each particle may therefore represent more than one packet,

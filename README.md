@@ -15,10 +15,11 @@ streams updates to a browser-based 2D canvas over WebSockets.
 - Captured packets are aggregated per edge and protocol over a 16 ms window, then
   animated as particles travelling along their edges; the colour encodes the
   protocol and the size encodes the average packet size. Each aggregate spawns a
-  small number of sampled particles, so one particle may represent several
-  packets while every spawned particle reaches its destination. Traffic between
-  the NetVis server itself and other hosts is shown as a thin glowing yellow edge
-  instead of individual particles.
+  small number of sampled particles, and each connection is limited in rendered 
+  particles per second, so one particle may represent several packets while every
+  spawned particle reaches its destination. Traffic between the NetVis server
+  itself and other hosts is shown as a thin glowing yellow edge instead of
+  individual particles.
 
 ## Requirements
 
