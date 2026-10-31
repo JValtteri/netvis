@@ -19,11 +19,46 @@ func lookupWhoisInfo(ip string) (org, country string) {
 		resp := whoisQuery(server, ip, 5*time.Second)
 		org = parseWhoisOrg(resp)
 		country = parseWhoisCountry(resp)
-		if org != "" || country != "" {
+		if isUsefulOrg(org) && org != "" {
 			return org, country
 		}
+		// If the referred server only returned a placeholder (e.g. RIPE saying
+		// the block isn't managed by RIPE NCC), try common RIRs directly.
+		for _, fallback := range []string{"whois.arin.net", "whois.apnic.net", "whois.lacnic.net", "whois.afrinic.net"} {
+			if strings.EqualFold(fallback, server) {
+				continue
+			}
+			fresp := whoisQuery(fallback, ip, 5*time.Second)
+			forg := parseWhoisOrg(fresp)
+			if isUsefulOrg(forg) && forg != "" {
+				fc := parseWhoisCountry(fresp)
+				if fc == "" {
+					fc = country
+				}
+				return forg, fc
+			}
+		}
+		if country != "" {
+			return "", country
+		}
+		return "", ""
 	}
-	return parseWhoisOrg(ianaResp), parseWhoisCountry(ianaResp)
+	org = parseWhoisOrg(ianaResp)
+	if !isUsefulOrg(org) {
+		org = ""
+	}
+	return org, parseWhoisCountry(ianaResp)
+}
+
+func isUsefulOrg(org string) bool {
+	if org == "" {
+		return false
+	}
+	l := strings.ToLower(org)
+	if strings.Contains(l, "not managed by") || strings.Contains(l, "non-ripe-ncc-managed") || strings.Contains(l, "address block not managed") {
+		return false
+	}
+	return true
 }
 
 func whoisQuery(server, query string, timeout time.Duration) string {
@@ -140,9 +175,19 @@ func usefulWhoisValue(value string) bool {
 	if value == "" {
 		return false
 	}
-	switch strings.ToLower(value) {
+	l := strings.ToLower(value)
+	switch l {
 	case "not available", "n/a", "na", "none", "null", "redacted",
 		"not disclosed", "unknown":
+		return false
+	}
+	if strings.Contains(l, "not managed by") {
+		return false
+	}
+	if strings.Contains(l, "non-ripe-ncc-managed") {
+		return false
+	}
+	if strings.Contains(l, "address block not managed") {
 		return false
 	}
 	return true
