@@ -4,26 +4,7 @@ A live, graphical representation of network traffic. NetVis captures packets fro
 network interface with libpcap, aggregates them into a host/connection graph, and
 streams updates to a browser-based 2D canvas over WebSockets.
 
-- Hosts are drawn as blobs labelled with their IP address and a display name:
-  reverse-DNS hostname for both local and external hosts, falling back to the
-  whois organization when no hostname is available. Long host names are
-  truncated to their last two dotted portions (e.g. `...googleusercontent.com`).
-  Addresses that reverse-resolve to the same hostname (typically a host's IPv4
-  and IPv6 addresses) are merged into a single blob; the info window shows
-  separate IPv4 and IPv6 lines for the group's addresses.
-- Hovering a host for 0.5 s or clicking it opens an info window with its IPv4
-  and IPv6 addresses, hostname, organization, country, packet count, data
-  totals, and last active time. Clicking a field copies it; clicking outside
-  closes the window.
-- Each unique source → destination IP pair becomes an edge.
-- Captured packets are aggregated per edge and protocol over a 16 ms window, then
-  animated as particles travelling along their edges; the colour encodes the
-  protocol and the size encodes the average packet size. Each aggregate spawns a
-  small number of sampled particles, and each connection is limited in rendered 
-  particles per second, so one particle may represent several packets while every
-  spawned particle reaches its destination. Traffic between the NetVis server
-  itself and other hosts is shown as a thin glowing yellow edge instead of
-  individual particles.
+![screenshot](img/screenshot_01.png)
 
 ## Requirements
 
