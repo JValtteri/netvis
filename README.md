@@ -6,6 +6,12 @@ streams updates to a browser-based 2D canvas over WebSockets.
 
 ![screenshot](img/screenshot_01.png)
 
+## Inspiration
+
+This tool was inspired by [OIP](https://github.com/USU-Security/oip), a network visualization tool, as mentioned by **Neil Wyler** (a.k.a **Grifter**) in one of his talks, is used at the [Black Hat conference](https://blackhat.com/index.html) NOC. The original tool was written in C++ and had to be built from source. The setup and use was difficult, and in my testing, it wasn't very reliable. 
+
+I wanted to try making a similar tool with more modern, and user friendly setup and interface. Thus was born NetVis.
+
 ## Requirements
 
 - Go 1.23 or newer
