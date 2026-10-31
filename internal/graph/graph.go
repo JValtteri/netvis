@@ -2,6 +2,7 @@ package graph
 
 import (
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -10,7 +11,14 @@ import (
 )
 
 type Host struct {
-	IP           string `json:"ip"`
+	IP string `json:"ip"`
+	// IPs lists every address that belongs to this host. A host is grouped by
+	// its resolved reverse-DNS hostname, so a machine observed over both IPv4
+	// and IPv6 is represented by one Host record whose addresses are in IPs.
+	IPs []string `json:"ips,omitempty"`
+	// Group is the canonical identity shared by all addresses of the same
+	// host. It is normally the IP that first resolved the group's hostname.
+	Group        string `json:"group,omitempty"`
 	Hostname     string `json:"hostname"`
 	Organization string `json:"organization,omitempty"`
 	Country      string `json:"country,omitempty"`
@@ -39,6 +47,11 @@ type Graph struct {
 	onHost  func(Host)
 	resolve func(string) hostDetails
 
+	// nameGroups maps a resolved hostname to the canonical group (the first IP
+	// that resolved to that name). It lets IPv4 and IPv6 addresses of the same
+	// host share one identity.
+	nameGroups map[string]string
+
 	lookupMu  sync.Mutex
 	nameCache map[string]hostDetails
 	pending   map[string]bool
@@ -46,11 +59,12 @@ type Graph struct {
 
 func New() *Graph {
 	return &Graph{
-		hosts:     make(map[string]*Host),
-		edges:     make(map[string]*Edge),
-		nameCache: make(map[string]hostDetails),
-		pending:   make(map[string]bool),
-		resolve:   resolveName,
+		hosts:      make(map[string]*Host),
+		edges:      make(map[string]*Edge),
+		nameGroups: make(map[string]string),
+		nameCache:  make(map[string]hostDetails),
+		pending:    make(map[string]bool),
+		resolve:    resolveName,
 	}
 }
 
@@ -108,6 +122,8 @@ func (g *Graph) cachedDetails(ip string) hostDetails {
 func newHost(ip string, details hostDetails) *Host {
 	return &Host{
 		IP:           ip,
+		IPs:          []string{ip},
+		Group:        ip,
 		Hostname:     details.Hostname,
 		Organization: details.Organization,
 		Country:      details.Country,
@@ -142,26 +158,76 @@ func (g *Graph) scheduleLookup(ip string) {
 		delete(g.pending, ip)
 		g.lookupMu.Unlock()
 
-		var (
-			updated Host
-			found   bool
-			cb      func(Host)
-		)
-		g.mu.Lock()
-		if h, ok := g.hosts[ip]; ok {
-			h.Hostname = details.Hostname
-			h.Organization = details.Organization
-			h.Country = details.Country
-			updated = *h
-			found = true
-			cb = g.onHost
-		}
-		g.mu.Unlock()
-
-		if found && cb != nil {
-			cb(updated)
-		}
+		g.applyResolvedDetails(ip, details)
 	}()
+}
+
+// applyResolvedDetails stores resolved display details and, when the hostname
+// is known, folds every address that resolved to the same hostname into one
+// identity. All affected hosts are pushed to clients so the frontend can merge
+// their blobs and traffic counters.
+func (g *Graph) applyResolvedDetails(ip string, details hostDetails) {
+	g.mu.Lock()
+	h, ok := g.hosts[ip]
+	if !ok {
+		g.mu.Unlock()
+		return
+	}
+
+	h.Hostname = details.Hostname
+	h.Organization = details.Organization
+	h.Country = details.Country
+
+	// The first address that resolves a hostname becomes the group's canonical
+	// identity. Any other address that resolves to the same name joins it.
+	group := ip
+	if details.Hostname != "" {
+		if canonical, ok := g.nameGroups[details.Hostname]; ok {
+			group = canonical
+		} else {
+			g.nameGroups[details.Hostname] = ip
+		}
+	}
+	h.Group = group
+
+	// Rebuild the address list for every host in this group, and collect the
+	// updated records to broadcast.
+	members := make([]string, 0, 2)
+	for memberIP, member := range g.hosts {
+		if member.Group == group {
+			members = append(members, memberIP)
+		}
+	}
+	sort.Slice(members, func(i, j int) bool { return ipSortLess(members[i], members[j]) })
+
+	updates := make([]Host, 0, len(members))
+	for _, memberIP := range members {
+		member := g.hosts[memberIP]
+		member.Group = group
+		member.IPs = append([]string(nil), members...)
+		updates = append(updates, *member)
+	}
+	cb := g.onHost
+	g.mu.Unlock()
+
+	if cb == nil {
+		return
+	}
+	for _, updated := range updates {
+		cb(updated)
+	}
+}
+
+// ipSortLess orders addresses for display, preferring IPv4 because it is
+// shorter and more familiar in the blob label.
+func ipSortLess(a, b string) bool {
+	parsedA, parsedB := net.ParseIP(a), net.ParseIP(b)
+	a4 := parsedA != nil && parsedA.To4() != nil
+	b4 := parsedB != nil && parsedB.To4() != nil
+	if a4 != b4 {
+		return a4
+	}
+	return a < b
 }
 
 func resolveName(ip string) hostDetails {

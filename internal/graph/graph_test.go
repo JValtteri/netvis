@@ -106,12 +106,13 @@ func TestHostNameResolutionIsAsyncAndPushed(t *testing.T) {
 	g.Apply(capture.Event{SrcIP: "10.0.0.1", DstIP: "8.8.8.8", Proto: "UDP", Bytes: 1})
 
 	seen := map[string]Host{}
-	for i := 0; i < 2; i++ {
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 2 {
 		select {
 		case h := <-updates:
 			seen[h.IP] = h
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for host update %d", i+1)
+		case <-deadline:
+			t.Fatalf("timed out waiting for host updates, saw %v", seen)
 		}
 	}
 
@@ -165,6 +166,74 @@ func TestHostNameResolutionIsCached(t *testing.T) {
 
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Errorf("resolver called %d times, want 2 (one per host, cached afterwards)", got)
+	}
+}
+
+func TestHostsWithSameHostnameAreGrouped(t *testing.T) {
+	g := New()
+	g.resolve = func(string) hostDetails {
+		return hostDetails{Hostname: "dual-stack.example"}
+	}
+
+	g.Apply(capture.Event{SrcIP: "10.0.0.1", DstIP: "2001:db8::1", Proto: "TCP", Bytes: 1})
+
+	var snap Snapshot
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snap = g.Snapshot()
+		if len(snap.Hosts) == 2 && snap.Hosts[0].Group != "" &&
+			snap.Hosts[0].Group == snap.Hosts[1].Group {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(snap.Hosts) != 2 {
+		t.Fatalf("got %d hosts, want 2", len(snap.Hosts))
+	}
+
+	a, b := snap.Hosts[0], snap.Hosts[1]
+	if a.Group == "" || a.Group != b.Group {
+		t.Fatalf("groups differ: %q and %q", a.Group, b.Group)
+	}
+	if a.Group != a.IP && a.Group != b.IP {
+		t.Errorf("group %q is not one of the host IPs", a.Group)
+	}
+	if len(a.IPs) != 2 || len(b.IPs) != 2 {
+		t.Fatalf("address lists = %v / %v, want two addresses each", a.IPs, b.IPs)
+	}
+	// IPv4 is preferred for display.
+	if a.IPs[0] != "10.0.0.1" || b.IPs[0] != "10.0.0.1" {
+		t.Errorf("address lists = %v / %v, want IPv4 first", a.IPs, b.IPs)
+	}
+}
+
+func TestHostsWithDifferentHostnamesStaySeparate(t *testing.T) {
+	g := New()
+	g.resolve = func(ip string) hostDetails {
+		return hostDetails{Hostname: "host-" + ip}
+	}
+
+	g.Apply(capture.Event{SrcIP: "10.0.0.1", DstIP: "10.0.0.2", Proto: "TCP", Bytes: 1})
+
+	var snap Snapshot
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snap = g.Snapshot()
+		if len(snap.Hosts) == 2 && snap.Hosts[0].Hostname != "" && snap.Hosts[1].Hostname != "" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(snap.Hosts) != 2 {
+		t.Fatalf("got %d hosts, want 2", len(snap.Hosts))
+	}
+	if snap.Hosts[0].Group == snap.Hosts[1].Group {
+		t.Fatalf("distinct hosts share group %q", snap.Hosts[0].Group)
+	}
+	for _, h := range snap.Hosts {
+		if len(h.IPs) != 1 || h.IPs[0] != h.IP {
+			t.Errorf("host %s address list = %v, want only itself", h.IP, h.IPs)
+		}
 	}
 }
 

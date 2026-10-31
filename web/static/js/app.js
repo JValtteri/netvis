@@ -260,9 +260,29 @@ function formatLastActive(timestamp) {
     return new Date(value).toLocaleString();
 }
 
+// Split a host's addresses into IPv4 and IPv6 for the details window.
+function hostAddresses(host) {
+    const addresses = Array.isArray(host.ips) && host.ips.length ? host.ips : [host.ip];
+    const ipv4 = [];
+    const ipv6 = [];
+    for (const addr of addresses) {
+        if (!addr) {
+            continue;
+        }
+        if (addr.indexOf(':') !== -1) {
+            ipv6.push(addr);
+        } else {
+            ipv4.push(addr);
+        }
+    }
+    return { ipv4, ipv6 };
+}
+
 function hostInfoValues(host) {
+    const addresses = hostAddresses(host);
     return {
-        ip: host.ip || '',
+        ipv4: addresses.ipv4.join(', '),
+        ipv6: addresses.ipv6.join(', '),
         hostname: host.hostname || '',
         organization: host.organization || '',
         country: host.country || '',
@@ -316,6 +336,13 @@ function refreshHostInfo() {
         const text = value || '—';
         if (el.textContent !== text) {
             el.textContent = text;
+        }
+        // Only show address families the host actually has.
+        if (field === 'ipv4' || field === 'ipv6') {
+            const row = el.closest('.host-info-row');
+            if (row) {
+                row.style.display = value ? '' : 'none';
+            }
         }
     }
     positionHostInfo(hostInfoHost);
@@ -690,6 +717,22 @@ const particles = [];
 let pendingPackets = [];
 const serverIPs = new Set();
 
+// Maps every observed address to the canonical host key. Hosts are stored in
+// `hosts` under that key, so an IPv4 and IPv6 address that the backend grouped
+// as one host share a single blob.
+const ipToGroup = new Map();
+
+function groupForIP(ip) {
+    return ipToGroup.get(ip) || ip;
+}
+
+function hostForIP(ip) {
+    if (!ip) {
+        return null;
+    }
+    return hosts.get(groupForIP(ip)) || null;
+}
+
 // Maximum number of in-flight particles. Once this budget is reached, new
 // packet particles are sampled (skipped) instead of evicting particles that
 // are still travelling toward their destination.
@@ -969,7 +1012,7 @@ function removeHosts(predicate) {
     }
     hostLabelBoundsCache.clear();
     for (const [key, edge] of edges) {
-        if (!hosts.has(edge.srcIP) || !hosts.has(edge.dstIP)) {
+        if (!hostForIP(edge.srcIP) || !hostForIP(edge.dstIP)) {
             edges.delete(key);
         }
     }
@@ -1007,10 +1050,26 @@ function isLocalIP(ip) {
     return false;
 }
 
+// A grouped host can have both local and global addresses. Treat it as local
+// when any of its addresses is local so the blob keeps its local colour.
+function hostIsLocal(host) {
+    if (!host) {
+        return false;
+    }
+    if (Array.isArray(host.ips)) {
+        for (const ip of host.ips) {
+            if (isLocalIP(ip)) {
+                return true;
+            }
+        }
+    }
+    return isLocalIP(host.ip);
+}
+
 function displayHostname(host) {
     // Both local and external hosts show their reverse-DNS hostname, with the
     // whois organization as a fallback when no hostname is known.
-    const name = isLocalIP(host.ip) ? host.hostname : (host.hostname || host.organization);
+    const name = hostIsLocal(host) ? host.hostname : (host.hostname || host.organization);
     if (!name) {
         return '';
     }
@@ -1032,9 +1091,16 @@ function truncateLabel(name) {
 }
 
 // Long IPv6 addresses are truncated for display; the full address is still
-// used when copying to the clipboard.
+// used when copying to the clipboard. Grouped hosts prefer an IPv4 address for
+// the blob label because it is shorter and more familiar.
 function displayIP(host) {
-    const ip = host.ip;
+    let ip = host.ip;
+    if (Array.isArray(host.ips)) {
+        const v4 = host.ips.find((addr) => addr.indexOf(':') === -1);
+        if (v4) {
+            ip = v4;
+        }
+    }
     if (ip.indexOf(':') !== -1 && ip.length > 18) {
         return ip.substring(0, 15) + '...';
     }
@@ -1140,8 +1206,8 @@ function countEdgeCrossingsAtPoint(px, py) {
     // and existing edges - or just count existing edge crossings in the area.
     // Try to minimize total crossings involving edges to/from this new host.
     for (const edge of edges.values()) {
-        const src = hosts.get(edge.srcIP);
-        const dst = hosts.get(edge.dstIP);
+        const src = hostForIP(edge.srcIP);
+        const dst = hostForIP(edge.dstIP);
         if (!src || !dst) continue;
         // Check if a line from (px,py) to src crosses any other edge, 
         // or just count general edge crossings in vicinity
@@ -1154,16 +1220,16 @@ function countEdgeCrossingsAtPoint(px, py) {
     // the shortest path/line to place it - alternatively count total number
     // of edge-edge intersections in the neighborhood weighted toward edges
     for (const edge of edges.values()) {
-        const src = hosts.get(edge.srcIP);
-        const dst = hosts.get(edge.dstIP);
+        const src = hostForIP(edge.srcIP);
+        const dst = hostForIP(edge.dstIP);
         if (!src || !dst) continue;
         // Check intersection of edges that might connect to this point
         // Count if placing here would create crossings with existing edges
         // A simple heuristic: count how many existing edges pass near and intersect
         for (const edge2 of edges.values()) {
             if (edge === edge2) continue;
-            const s2 = hosts.get(edge2.srcIP);
-            const t2 = hosts.get(edge2.dstIP);
+            const s2 = hostForIP(edge2.srcIP);
+            const t2 = hostForIP(edge2.dstIP);
             if (!s2 || !t2) continue;
             if (segmentsIntersect(src.x, src.y, dst.x, dst.y, s2.x, s2.y, t2.x, t2.y)) {
                 crossings++;
@@ -1187,12 +1253,12 @@ function countCrossingsForPoint(px, py) {
     // and all existing edges
     for (const other of hosts.values()) {
         for (const edge of edges.values()) {
-            const src = hosts.get(edge.srcIP);
-            const dst = hosts.get(edge.dstIP);
+            const src = hostForIP(edge.srcIP);
+            const dst = hostForIP(edge.dstIP);
             if (!src || !dst) continue;
-            // Don't count if the existing edge involves 'other'? 
-            if ((edge.srcIP === other.ip && edge.dstIP === other.ip)) continue;
-            if (edge.srcIP === other.ip || edge.dstIP === other.ip) {
+            // Don't count if the existing edge involves 'other'?
+            if (src === other && dst === other) continue;
+            if (src === other || dst === other) {
                 // Connecting to other means this would be a parallel-ish connection to an endpoint of existing edge?
                 // Skip counting as crossing if it shares endpoint
                 continue;
@@ -1212,7 +1278,7 @@ function findBestHostPosition(connectedToIps) {
     // If we know which host this will connect to, prefer edge closest to it
     if (connectedToIps && connectedToIps.length > 0) {
         for (const cip of connectedToIps) {
-            const ch = hosts.get(cip);
+            const ch = hostForIP(cip);
             if (!ch) continue;
             // Project from center toward ch, intersect with screen edge
             const cx = canvas.width / 2;
@@ -1271,7 +1337,7 @@ function findBestHostPosition(connectedToIps) {
         let score = crossings * 1000;
         if (connectedToIps && connectedToIps.length > 0) {
             for (const cip of connectedToIps) {
-                const ch = hosts.get(cip);
+                const ch = hostForIP(cip);
                 if (ch) {
                     const dx = ch.x - c.x;
                     const dy = ch.y - c.y;
@@ -1295,10 +1361,20 @@ function findBestHostPosition(connectedToIps) {
 }
 
 function createHost(ip, connectedToIps) {
+    const group = groupForIP(ip);
+    const existing = hosts.get(group);
+    if (existing) {
+        registerHostAddress(existing, ip);
+        return existing;
+    }
+
     // Try to place near an edge shared with a connected host.
     const pos = findBestHostPosition(connectedToIps || []);
+    const addresses = group === ip ? [ip] : [group, ip];
     const host = {
-        ip: ip,
+        ip: group,
+        group: group,
+        ips: addresses,
         hostname: '',
         organization: '',
         country: '',
@@ -1315,14 +1391,142 @@ function createHost(ip, connectedToIps) {
         lastActivityAt: Date.now(),
         glowLevel: 0
     };
-    hosts.set(ip, host);
+    hosts.set(group, host);
+    ipToGroup.set(ip, group);
+    ipToGroup.set(group, group);
     hostArrayDirty = true;
     needRedraw = true;
     return host;
 }
 
+function registerHostAddress(host, ip) {
+    if (!host || !ip) {
+        return;
+    }
+    ipToGroup.set(ip, host.ip);
+    ipToGroup.set(host.ip, host.ip);
+    if (!host.ips) {
+        host.ips = [host.ip];
+    }
+    if (!host.ips.includes(ip)) {
+        host.ips.push(ip);
+    }
+}
+
+// Merge `source` into `target` when two addresses turn out to belong to the
+// same host. Traffic counters, aliases and references are carried over so the
+// merged blob keeps its history.
+function mergeHosts(target, source) {
+    if (!target || !source || target === source) {
+        return target;
+    }
+
+    target.sentCount = (target.sentCount || 0) + (source.sentCount || 0);
+    target.receivedCount = (target.receivedCount || 0) + (source.receivedCount || 0);
+    target.bytesSent = (target.bytesSent || 0) + (source.bytesSent || 0);
+    target.bytesReceived = (target.bytesReceived || 0) + (source.bytesReceived || 0);
+    target.lastSentAt = Math.max(target.lastSentAt || 0, source.lastSentAt || 0);
+    target.lastActivityAt = Math.max(target.lastActivityAt || 0, source.lastActivityAt || 0);
+    target.glowLevel = Math.max(target.glowLevel || 0, source.glowLevel || 0);
+    target.hostname = target.hostname || source.hostname;
+    target.organization = target.organization || source.organization;
+    target.country = target.country || source.country;
+
+    const addresses = new Set([...(target.ips || [target.ip]), ...(source.ips || [source.ip])]);
+    target.ips = Array.from(addresses);
+    for (const addr of target.ips) {
+        ipToGroup.set(addr, target.ip);
+    }
+    ipToGroup.set(source.ip, target.ip);
+    ipToGroup.set(target.ip, target.ip);
+
+    hosts.delete(source.ip);
+    if (draggedHost === source) {
+        draggedHost = target;
+    }
+    if (hostInfoHost === source) {
+        hostInfoHost = target;
+    }
+    if (pendingHoverHost === source) {
+        pendingHoverHost = target;
+    }
+    hostLabelBoundsCache.clear();
+    hostArrayDirty = true;
+    needRedraw = true;
+    return target;
+}
+
+// Apply a host record from a snapshot or a `host` message. The backend groups
+// addresses that resolve to the same hostname; this function creates or merges
+// the corresponding blob and records every alias.
+function applyHostDetails(info) {
+    if (!info || !info.ip) {
+        return null;
+    }
+
+    const ip = info.ip;
+    const group = info.group || ip;
+    const addresses = Array.isArray(info.ips) && info.ips.length ? info.ips.slice() : [ip];
+    if (!addresses.includes(ip)) {
+        addresses.unshift(ip);
+    }
+
+    let target = hosts.get(group);
+    const current = hostForIP(ip);
+
+    if (!target) {
+        if (current && current.ip !== group) {
+            // Re-key the existing host under the group's canonical address.
+            hosts.delete(current.ip);
+            current.ip = group;
+            current.group = group;
+            hosts.set(group, current);
+            target = current;
+        } else {
+            target = current || createHost(group, []);
+        }
+    } else if (current && current !== target) {
+        mergeHosts(target, current);
+    }
+
+    // Fold in any address that was rendered as its own host before the group
+    // was known (traffic can create hosts before reverse DNS finishes).
+    for (const addr of addresses) {
+        const existing = hosts.get(addr);
+        if (existing && existing !== target) {
+            mergeHosts(target, existing);
+        }
+    }
+
+    for (const addr of addresses) {
+        registerHostAddress(target, addr);
+    }
+    registerHostAddress(target, ip);
+    registerHostAddress(target, group);
+    target.group = group;
+    target.ip = group;
+    for (const addr of target.ips || []) {
+        ipToGroup.set(addr, group);
+    }
+
+    if (info.hostname !== undefined) {
+        target.hostname = info.hostname || '';
+    }
+    if (info.organization !== undefined) {
+        target.organization = info.organization || '';
+    }
+    if (info.country !== undefined) {
+        target.country = info.country || '';
+    }
+
+    hostLabelBoundsCache.clear();
+    hostArrayDirty = true;
+    needRedraw = true;
+    return target;
+}
+
 function getOrCreateHost(ip, connectedToIps) {
-    return hosts.get(ip) || createHost(ip, connectedToIps);
+    return hostForIP(ip) || createHost(ip, connectedToIps);
 }
 
 const ws = new WebSocket(`ws://${window.location.host}/ws`);
@@ -1365,46 +1569,17 @@ function handleMessage(msg) {
         }
         if (data.hosts) {
             for (const h of data.hosts) {
-                if (!hosts.has(h.ip)) {
-                    const pos = findBestHostPosition([]);
-                    hosts.set(h.ip, {
-                        ip: h.ip,
-                        hostname: h.hostname,
-                        organization: h.organization || '',
-                        country: h.country || '',
-                        x: pos.x,
-                        y: pos.y,
-                        vx: (Math.random() - 0.5) * 0.3,
-                        vy: (Math.random() - 0.5) * 0.3,
-                        radius: 22,
-                        sentCount: 0,
-                        receivedCount: 0,
-                        bytesSent: 0,
-                        bytesReceived: 0,
-                        lastSentAt: 0,
-                        lastActivityAt: Date.now(),
-                        glowLevel: 0
-                    });
-                    hostLabelBoundsCache.clear();
-                    hostArrayDirty = true;
-                    needRedraw = true;
-                } else {
-                    const host = hosts.get(h.ip);
-                    host.hostname = h.hostname;
-                    host.organization = h.organization || '';
-                    host.country = h.country || '';
-                    hostLabelBoundsCache.clear();
-                    if (hostInfoHost === host) {
-                        refreshHostInfo();
-                    }
+                const host = applyHostDetails(h);
+                if (hostInfoHost === host) {
+                    refreshHostInfo();
                 }
             }
         }
         if (data.edges) {
             for (const e of data.edges) {
                 edges.set(edgeKey(e.srcIP, e.dstIP), e);
-                const srcHost = hosts.get(e.srcIP);
-                const dstHost = hosts.get(e.dstIP);
+                const srcHost = hostForIP(e.srcIP);
+                const dstHost = hostForIP(e.dstIP);
                 if (srcHost) {
                     srcHost.sentCount = (srcHost.sentCount || 0) + (e.count || 0);
                     srcHost.bytesSent = (srcHost.bytesSent || 0) + (e.bytes || 0);
@@ -1424,23 +1599,12 @@ function handleMessage(msg) {
         // asynchronous display details arrive.
         processPendingPackets();
         const info = msg.data;
-        const host = hosts.get(info.ip);
+        const host = applyHostDetails(info);
         if (host) {
-            const hostname = info.hostname || '';
-            const organization = info.organization || '';
-            const country = info.country || '';
-            if (host.hostname !== hostname || host.organization !== organization) {
-                host.hostname = hostname;
-                host.organization = organization;
-                host.country = country;
-                hostLabelBoundsCache.clear();
-                needRedraw = true;
-            } else if (host.country !== country) {
-                host.country = country;
-            }
             if (hostInfoHost === host) {
                 refreshHostInfo();
             }
+            updateHostSizes();
         }
         updateStats();
     } else if (msg.type === 'traffic') {
@@ -1555,24 +1719,30 @@ function processPendingPackets() {
         dstHost.lastActivityAt = now;
 
         const key = edgeKey(record.srcIP, record.dstIP);
-        const edge = edges.get(key);
-        if (edge) {
-            edge.count += count;
-            edge.bytes += bytes;
-        } else {
-            edges.set(key, { srcIP: record.srcIP, dstIP: record.dstIP, count: count, bytes: bytes });
-        }
+        const frontend = recordIsFrontend(record);
+        // Traffic between two addresses of the same host (for example its IPv4
+        // and IPv6) has no meaningful edge or particle once the addresses are
+        // grouped, but still counts toward the host's totals above.
+        if (srcHost !== dstHost) {
+            const edge = edges.get(key);
+            if (edge) {
+                edge.count += count;
+                edge.bytes += bytes;
+            } else {
+                edges.set(key, { srcIP: record.srcIP, dstIP: record.dstIP, count: count, bytes: bytes });
+            }
 
-        if (!recordIsFrontend(record)) {
-            // One aggregate can represent many packets. Spawn a small sample so
-            // the animation still shows activity without scaling client work
-            // with the packet rate. Each connection is additionally limited to
-            // MAX_CONNECTION_PARTICLES_PER_SECOND.
-            const requested = Math.min(count, 4);
-            const spawnCount = takeParticleBudget(key, now, requested);
-            const averageBytes = count > 0 ? bytes / count : bytes;
-            for (let n = 0; n < spawnCount; n++) {
-                spawnParticle(record, averageBytes);
+            if (!frontend) {
+                // One aggregate can represent many packets. Spawn a small sample so
+                // the animation still shows activity without scaling client work
+                // with the packet rate. Each connection is additionally limited to
+                // MAX_CONNECTION_PARTICLES_PER_SECOND.
+                const requested = Math.min(count, 4);
+                const spawnCount = takeParticleBudget(key, now, requested);
+                const averageBytes = count > 0 ? bytes / count : bytes;
+                for (let n = 0; n < spawnCount; n++) {
+                    spawnParticle(record, averageBytes);
+                }
             }
         }
     }
@@ -1610,13 +1780,13 @@ function runPhysics(stepDt) {
 
     // Attraction force along connections.
     for (const edge of edges.values()) {
-        const src = hosts.get(edge.srcIP);
-        const dst = hosts.get(edge.dstIP);
+        const src = hostForIP(edge.srcIP);
+        const dst = hostForIP(edge.dstIP);
         if (!src || !dst || src === dst) continue;
         if (src === draggedHost && dst === draggedHost) continue;
 
-        const srcLocal = isLocalIP(src.ip);
-        const dstLocal = isLocalIP(dst.ip);
+        const srcLocal = hostIsLocal(src);
+        const dstLocal = hostIsLocal(dst);
         let strength;
         if (srcLocal && dstLocal) {
             strength = settings.attractLocalLocal;
@@ -1659,8 +1829,8 @@ function runPhysics(stepDt) {
         // de-duplicates bidirectional edges to the same neighbour.
         const adjacency = new Map();
         for (const edge of edges.values()) {
-            const src = hosts.get(edge.srcIP);
-            const dst = hosts.get(edge.dstIP);
+            const src = hostForIP(edge.srcIP);
+            const dst = hostForIP(edge.dstIP);
             if (!src || !dst || src === dst) continue;
             let neighbors = adjacency.get(src);
             if (!neighbors) {
@@ -1932,9 +2102,9 @@ function animate() {
         if (isFrontendTraffic(edge.srcIP, edge.dstIP)) {
             continue;
         }
-        const src = hosts.get(edge.srcIP);
-        const dst = hosts.get(edge.dstIP);
-        if (src && dst) {
+        const src = hostForIP(edge.srcIP);
+        const dst = hostForIP(edge.dstIP);
+        if (src && dst && src !== dst) {
             ctx.beginPath();
             ctx.moveTo(src.x, src.y);
             ctx.lineTo(dst.x, dst.y);
@@ -1951,9 +2121,9 @@ function animate() {
         if (!isFrontendTraffic(edge.srcIP, edge.dstIP)) {
             continue;
         }
-        const src = hosts.get(edge.srcIP);
-        const dst = hosts.get(edge.dstIP);
-        if (src && dst) {
+        const src = hostForIP(edge.srcIP);
+        const dst = hostForIP(edge.dstIP);
+        if (src && dst && src !== dst) {
             ctx.beginPath();
             ctx.moveTo(src.x, src.y);
             ctx.lineTo(dst.x, dst.y);
@@ -1974,9 +2144,9 @@ function animate() {
         }
 
         // Follow the live host positions so packets don't miss moving hosts.
-        const src = hosts.get(p.srcIP);
-        const dst = hosts.get(p.dstIP);
-        if (!src || !dst) {
+        const src = hostForIP(p.srcIP);
+        const dst = hostForIP(p.dstIP);
+        if (!src || !dst || src === dst) {
             particles.splice(i, 1);
             continue;
         }
@@ -1997,7 +2167,7 @@ function animate() {
     // Draw hosts
     for (const host of hosts.values()) {
         const hasSent = (host.sentCount || 0) > 0;
-        const local = isLocalIP(host.ip);
+        const local = hostIsLocal(host);
         // Blob color: green if local, gray if never sent, blue otherwise
         let fillColor, strokeColor;
         if (!hasSent) {

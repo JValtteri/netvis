@@ -8,9 +8,13 @@ streams updates to a browser-based 2D canvas over WebSockets.
   reverse-DNS hostname for both local and external hosts, falling back to the
   whois organization when no hostname is available. Long host names are
   truncated to their last two dotted portions (e.g. `...googleusercontent.com`).
-- Hovering a host for 0.5 s or clicking it opens an info window with its IP,
-  hostname, organization, country, packet count, data totals, and last active
-  time. Clicking a field copies it; clicking outside closes the window.
+  Addresses that reverse-resolve to the same hostname (typically a host's IPv4
+  and IPv6 addresses) are merged into a single blob; the info window shows
+  separate IPv4 and IPv6 lines for the group's addresses.
+- Hovering a host for 0.5 s or clicking it opens an info window with its IPv4
+  and IPv6 addresses, hostname, organization, country, packet count, data
+  totals, and last active time. Clicking a field copies it; clicking outside
+  closes the window.
 - Each unique source → destination IP pair becomes an edge.
 - Captured packets are aggregated per edge and protocol over a 16 ms window, then
   animated as particles travelling along their edges; the colour encodes the
@@ -186,9 +190,10 @@ DESIGN.md            Design document and implementation notes
 2. `graph` records hosts and edges keyed by `srcIP->dstIP`, accumulating packet
    counts and byte totals. Host details are resolved asynchronously: reverse DNS
    (with a 3 s timeout) for hostnames, and a whois organization/country lookup
-   (via IANA referral to the responsible RIR) for external addresses. Resolved
-   details are streamed to clients as `host` messages and fill in the label and
-   host info window when they arrive.
+   (via IANA referral to the responsible RIR) for external addresses. Addresses
+   that resolve to the same hostname share one host identity, so a dual-stack
+   host appears as a single blob. Resolved details are streamed to clients as
+   `host` messages and fill in the label and host info window when they arrive.
 3. `server` aggregates events per directed edge, protocol, and frontend flag
    over a fixed 16 ms window, broadcasts compact `traffic` records (with host
    messages batched alongside them), and sends a full snapshot when a client
@@ -211,4 +216,6 @@ Loopback traffic may need `-iface lo`.
 
 **Reverse DNS / whois is slow or empty** — lookups run asynchronously with a 3 s
 reverse-DNS timeout; when no answer is available the label stays empty. Whois
-requires outbound TCP port 43.
+requires outbound TCP port 43. IPv4/IPv6 addresses are only merged into one host
+when both reverse-resolve to the same hostname, so a missing PTR record keeps
+them as separate blobs.

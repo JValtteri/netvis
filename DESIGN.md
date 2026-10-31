@@ -81,8 +81,14 @@ and normalizes them to one-record aggregates.
 
 ### Hosts
 
-- Each observed host is a blob identified by IP (no duplicates) and displayed
-  with its IP.
+- Each observed host is a blob. Hosts are keyed by identity, not by raw
+  address: when reverse DNS resolves two addresses (for example a host's IPv4
+  and IPv6 addresses) to the same hostname, they are grouped into one host and
+  rendered as a single blob. The first address that resolved the name becomes
+  the group's canonical identity; the host record carries `group` and the full
+  `ips` list. The blob label prefers an IPv4 address when the group has one,
+  and the host info window shows separate IPv4 and IPv6 lines for the group's
+  addresses. Hosts with no resolvable hostname remain separate per IP.
 - Display details are resolved asynchronously and cached per IP:
   - **All hosts** use reverse DNS for a hostname (3 s timeout).
   - **External hosts** additionally use a whois lookup: query `whois.iana.org`
@@ -166,10 +172,11 @@ and normalizes them to one-record aggregates.
 - A host info window opens next to the host after hovering it for 0.5 s, or when
   the host is clicked. Clicking a host pins the window; clicking anywhere outside
   the window dismisses it.
-- The window shows the host IP, hostname, organization, country, total packet
-  count (sent + received), total data sent, total data received, and last active
-  time. It follows the host as the layout moves and updates live as traffic
-  arrives.
+- The window shows the host's IPv4 and IPv6 addresses (each on its own line,
+  omitted when the host has no address of that family), hostname, organization,
+  country, total packet count (sent + received), total data sent, total data
+  received, and last active time. It follows the host as the layout moves and
+  updates live as traffic arrives.
 - Clicking any field in the window copies that field's text to the clipboard and
   shows a toast notification.
 - A hover-opened window closes once the cursor has been outside both the host and
