@@ -206,3 +206,9 @@ reverse-DNS timeout; when no answer is available the label stays empty. Whois
 requires outbound TCP port 43. IPv4/IPv6 addresses are only merged into one host
 when both reverse-resolve to the same hostname, so a missing PTR record keeps
 them as separate blobs.
+
+## License
+
+The default license is Apache 2.0 (see [LICENSE](LICENSE)). I want to be reasonable, 
+so if the license is holding you back. Get in touch and let me know what you need.
+I'm sure we can work something out.
