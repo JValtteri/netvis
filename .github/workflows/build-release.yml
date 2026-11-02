@@ -23,6 +23,8 @@ jobs:
             platform: linux/amd64
           - arch: arm64
             platform: linux/arm64
+          - arch: armv7
+            platform: linux/arm/v7
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -56,6 +58,9 @@ jobs:
             sh -s <<'EOF'
           set -eu
           apk add --no-cache build-base libpcap-dev >/dev/null
+          if [ "${ARCH}" = "armv7" ]; then
+            export GOARM=7
+          fi
           CGO_ENABLED=1 go build \
             -trimpath \
             -ldflags '-s -w -linkmode external -extldflags "-static"' \
@@ -106,6 +111,7 @@ jobs:
           Assets:
           - netvis-linux-amd64.zip: Linux x86-64
           - netvis-linux-arm64.zip: Linux ARM64
+          - netvis-linux-armv7.zip: Linux ARMv7 (32-bit hard-float)
 
           Each archive contains the NetVis binary, the web frontend, README.md, and LICENSE. Extract the archive and run sudo ./netvis -iface <interface> from the extracted directory."
 
