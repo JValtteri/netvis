@@ -90,6 +90,21 @@ func TestParseWhoisOrg(t *testing.T) {
 			resp: "",
 			want: "",
 		},
+		{
+			name: "arin cloudflare",
+			resp: "NetRange:       104.16.0.0 - 104.31.255.255\nCIDR:           104.16.0.0/12\nNetName:        CLOUDFLARENET\nOrganization:   Cloudflare, Inc. (CLOUD14)\n\nOrgName:        Cloudflare, Inc.\nCountry:        US\n",
+			want: "Cloudflare, Inc.",
+		},
+		{
+			name: "filters ripe placeholder",
+			resp: "inetnum:        151.101.0.0 - 151.105.255.255\nnetname:        NON-RIPE-NCC-MANAGED-ADDRESS-BLOCK\ndescr:          IPv4 address block not managed by the RIPE NCC\n",
+			want: "",
+		},
+		{
+			name: "filters early registration",
+			resp: "NetRange:       136.0.0.0 - 136.255.255.255\nOrganization:   Early registration addresses\n",
+			want: "",
+		},
 	}
 
 	for _, tc := range cases {
@@ -183,5 +198,19 @@ func TestUsefulWhoisValue(t *testing.T) {
 		if usefulWhoisValue(v) {
 			t.Errorf("usefulWhoisValue(%q) = true, want false", v)
 		}
+	}
+}
+
+func TestParseWhoisOrgBlocksPreferSpecific(t *testing.T) {
+	resp := "NetRange:       23.32.0.0 - 23.67.255.255\nCIDR:           23.32.0.0/11\nNetName:        AKAMAI\nOrganization:   Akamai Technologies, Inc. (AKAMAI)\n\nOrgName:        Akamai Technologies, Inc.\n\nNetRange:       23.36.0.0 - 23.36.255.255\nNetName:        SOME\nOrganization:   Some Other Org\n\nOrgName:        Some Other Org\n"
+	if got := parseWhoisOrg(resp); got != "Some Other Org" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestParseWhoisOrgNoCrashOnMalformedRange(t *testing.T) {
+	resp := "NetRange: bad\nOrganization: Example Corp\n"
+	if got := parseWhoisOrg(resp); got != "Example Corp" {
+		t.Fatalf("got %q", got)
 	}
 }
