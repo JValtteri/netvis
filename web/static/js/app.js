@@ -847,9 +847,8 @@ function isFrontendTraffic(srcIP, dstIP) {
     if (!webPort || webPort <= 0) {
         return false;
     }
-    if (!serverIPs.has(srcIP) && !serverIPs.has(dstIP)) {
-        return false;
-    }
+    // Pairs are only added after the server marks a record as frontend traffic
+    // or after legacy port-based detection confirms a server address.
     return frontendConnections.has(frontendKey(srcIP, dstIP)) ||
            frontendConnections.has(frontendKey(dstIP, srcIP));
 }
@@ -1678,6 +1677,10 @@ function enqueueTrafficRecord(record) {
 // the ports here.
 function recordIsFrontend(record) {
     if (record.frontend === true) {
+        // The server already classified this record, but edge rendering
+        // identifies frontend connections from this set, so register the pair
+        // as well as returning the flag.
+        frontendConnections.add(frontendKey(record.srcIP, record.dstIP));
         return true;
     }
     if (record.frontend === false) {
