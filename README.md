@@ -14,8 +14,15 @@ I wanted to try making a similar tool with more modern, and user friendly setup 
 
 ## Requirements
 
+To build from source:
+
 - Go 1.23 or newer
 - Linux with `libpcap` development headers (cgo is used)
+
+To run NetVis:
+
+- Linux (prebuilt release binaries are statically linked and do not require
+  `libpcap` to be installed)
 - Root privileges or `CAP_NET_RAW`/`CAP_NET_ADMIN` for live capture
 
 Install libpcap headers on Debian/Ubuntu:
@@ -36,7 +43,31 @@ On Arch:
 sudo pacman -S libpcap
 ```
 
-## Build
+## Download
+
+Prebuilt Linux binaries are published on the
+[Releases](https://github.com/JValtteri/netvis/releases) page:
+
+| Platform | Archive |
+| --- | --- |
+| x86-64 | `netvis-linux-amd64.zip` |
+| ARM64 | `netvis-linux-arm64.zip` |
+| ARMv7 (32-bit hard-float) | `netvis-linux-armv7.zip` |
+
+Each archive contains the statically linked `netvis` binary, the `web/static`
+frontend, `README.md`, and `LICENSE`. Extract it and run NetVis from the extracted
+directory:
+
+```bash
+unzip netvis-linux-amd64.zip
+cd netvis-linux-amd64
+sudo ./netvis -iface eth0
+```
+
+New builds are produced automatically when changes are pushed to `main` and are
+attached to draft releases, which can then be published.
+
+## Build from source
 
 ```bash
 go build -o netvis ./cmd/netvis
@@ -44,6 +75,9 @@ go build -o netvis ./cmd/netvis
 
 The resulting `netvis` binary is placed in the current directory (it is already
 listed in `.gitignore`).
+
+Release binaries are built statically in CI (see
+[`.github/workflows/build-release.yml`](.github/workflows/build-release.yml)).
 
 ## Test
 
@@ -72,9 +106,9 @@ sudo ./netvis -iface eth0 -filter "tcp port 443" -addr ":9090"
 
 Open <http://localhost:3993> (or the address given with `-addr`) in a browser.
 
-Run the binary from the repository root (or wherever `web/static/` is available),
-because the server serves the frontend from `web/static/` relative to the current
-working directory.
+Run the binary from the repository root, or from the directory extracted from a
+release archive, because the server serves the frontend from `web/static/`
+relative to the current working directory.
 
 ### Flags
 
