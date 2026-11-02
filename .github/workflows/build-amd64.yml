@@ -1,0 +1,16 @@
+name: Build linux/amd64
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-platform.yml
+    with:
+      arch: amd64
+      platform: linux/amd64

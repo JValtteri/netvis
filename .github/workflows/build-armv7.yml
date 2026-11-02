@@ -1,0 +1,17 @@
+name: Build linux/armv7
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-platform.yml
+    with:
+      arch: armv7
+      platform: linux/arm/v7
+      goarm: "7"

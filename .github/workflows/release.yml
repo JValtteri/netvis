@@ -1,0 +1,128 @@
+name: Draft release
+
+on:
+  workflow_run:
+    workflows:
+      - Build linux/amd64
+      - Build linux/arm64
+      - Build linux/armv7
+    types:
+      - completed
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: draft-release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create draft release
+    if: github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for all platform builds
+        id: builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          ready=true
+          : > "${RUNNER_TEMP}/run-ids"
+
+          for spec in "amd64:build-amd64.yml" "arm64:build-arm64.yml" "armv7:build-armv7.yml"; do
+            arch="${spec%%:*}"
+            workflow="${spec#*:}"
+
+            runs=$(gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow "${workflow}" \
+              --branch main \
+              --commit "${SHA}" \
+              --limit 1 \
+              --json databaseId,status,conclusion,number)
+
+            if [ "$(jq 'length' <<<"${runs}")" -eq 0 ]; then
+              echo "No ${workflow} run found for ${SHA} yet; waiting."
+              ready=false
+              continue
+            fi
+
+            status=$(jq -r '.[0].status' <<<"${runs}")
+            conclusion=$(jq -r '.[0].conclusion' <<<"${runs}")
+            run_id=$(jq -r '.[0].databaseId' <<<"${runs}")
+            run_number=$(jq -r '.[0].number' <<<"${runs}")
+
+            if [ "${status}" != "completed" ]; then
+              echo "${workflow} is still ${status}; waiting."
+              ready=false
+              continue
+            fi
+
+            if [ "${conclusion}" != "success" ]; then
+              echo "::error::${workflow} finished with '${conclusion}'."
+              exit 1
+            fi
+
+            echo "${arch}=${run_id}" >> "${RUNNER_TEMP}/run-ids"
+            if [ "${arch}" = "amd64" ]; then
+              echo "version=${run_number}" >> "${GITHUB_OUTPUT}"
+            fi
+          done
+
+          echo "ready=${ready}" >> "${GITHUB_OUTPUT}"
+
+      - name: Download platform zips
+        if: steps.builds.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r arch run_id; do
+            mkdir -p "dist/${arch}"
+            gh run download "${run_id}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --name "netvis-linux-${arch}" \
+              --dir "dist/${arch}"
+          done < "${RUNNER_TEMP}/run-ids"
+
+          mv dist/*/*.zip dist/
+          ls -l dist/*.zip
+
+      - name: Create draft release
+        if: steps.builds.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_NUMBER: ${{ steps.builds.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: v0.1.${{ steps.builds.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          NOTES="Automated draft build from ${SHA} on main.
+
+          Assets:
+          - netvis-linux-amd64.zip: Linux x86-64
+          - netvis-linux-arm64.zip: Linux ARM64
+          - netvis-linux-armv7.zip: Linux ARMv7 (32-bit hard-float)
+
+          Each archive contains the NetVis binary, the web frontend, README.md, and LICENSE. Extract the archive and run sudo ./netvis -iface <interface> from the extracted directory."
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/*.zip --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release edit "${TAG}" \
+              --draft \
+              --title "NetVis development build ${BUILD_NUMBER}" \
+              --notes "${NOTES}" \
+              --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${TAG}" dist/*.zip \
+              --draft \
+              --target "${SHA}" \
+              --title "NetVis development build ${BUILD_NUMBER}" \
+              --notes "${NOTES}" \
+              --repo "${GITHUB_REPOSITORY}"
+          fi
