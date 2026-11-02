@@ -1,0 +1,126 @@
+name: Build and draft release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.23"
+
+jobs:
+  build:
+    name: Build linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build binary
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/netvis-linux-${ARCH}"
+
+          # Build inside a container for the target architecture so cgo can
+          # link against that architecture's libpcap. Alpine's libpcap is
+          # built without optional backends, which allows a fully static
+          # binary that has no runtime library dependencies.
+          docker run --rm -i \
+            --platform "${PLATFORM}" \
+            -e HOME=/tmp \
+            -e GOPATH=/tmp/go \
+            -e GOCACHE=/tmp/go-cache \
+            -e ARCH="${ARCH}" \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "${PWD}:/src" \
+            -w /src \
+            "golang:${GO_VERSION}-alpine" \
+            sh -s <<'EOF'
+          set -eu
+          apk add --no-cache build-base libpcap-dev >/dev/null
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -ldflags '-s -w -linkmode external -extldflags "-static"' \
+            -o "dist/netvis-linux-${ARCH}/netvis" \
+            ./cmd/netvis
+          chown -R "${HOST_UID}:${HOST_GID}" "dist/netvis-linux-${ARCH}"
+          EOF
+
+      - name: Package zip
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          stage="dist/netvis-linux-${ARCH}"
+          mkdir -p "${stage}/web"
+          cp -r web/. "${stage}/web/"
+          cp README.md LICENSE "${stage}/"
+          (cd dist && zip -qr "netvis-linux-${ARCH}.zip" "netvis-linux-${ARCH}")
+          unzip -l "dist/netvis-linux-${ARCH}.zip"
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: netvis-linux-${{ matrix.arch }}
+          path: dist/netvis-linux-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Create draft release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download zips
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v0.1.${{ github.run_number }}
+        run: |
+          set -euo pipefail
+
+          NOTES="Automated draft build from ${GITHUB_SHA} on main.
+
+          Assets:
+          - netvis-linux-amd64.zip: Linux x86-64
+          - netvis-linux-arm64.zip: Linux ARM64
+
+          Each archive contains the NetVis binary, the web frontend, README.md, and LICENSE. Extract the archive and run sudo ./netvis -iface <interface> from the extracted directory."
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" dist/*.zip --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release edit "${TAG}" \
+              --draft \
+              --title "NetVis development build ${GITHUB_RUN_NUMBER}" \
+              --notes "${NOTES}" \
+              --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${TAG}" dist/*.zip \
+              --draft \
+              --target "${GITHUB_SHA}" \
+              --title "NetVis development build ${GITHUB_RUN_NUMBER}" \
+              --notes "${NOTES}" \
+              --repo "${GITHUB_REPOSITORY}"
+          fi
