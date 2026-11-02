@@ -202,6 +202,53 @@ body {
     accent-color: #4a90e2;
 }
 
+.select-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+    color: #ccc;
+}
+
+.select-row select {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    font-size: 12px;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    cursor: pointer;
+    color-scheme: dark;
+}
+
+/* Chrome's native dropdown popup inherits the select text colour, so give
+   options an explicit dark background to keep the white text readable. */
+.select-row select option {
+    color: #fff;
+    background-color: #1a1a1a;
+}
+
+.select-row select:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.select-row select:focus {
+    outline: 1px solid #4a90e2;
+}
+
+.checkbox-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.checkbox-group .checkbox-row {
+    margin-top: 0;
+}
+
 .checkbox-row {
     display: flex;
     align-items: center;

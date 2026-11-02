@@ -17,6 +17,13 @@ function getMousePos(e) {
     };
 }
 
+// Small blobs get a minimum guaranteed click/drag area. The default minimum
+// host size is 5 px, so clicks within twice that radius are treated as clicks
+// on the blob itself. This is deliberately fixed: changing the Min host size
+// setting does not change the click area.
+const DEFAULT_MIN_HOST_SIZE = 5;
+const HOST_CLICK_RADIUS = 20;
+
 // Camera maps world coordinates (host positions) to screen coordinates.
 // screen = world * scale + offset
 const camera = {
@@ -145,7 +152,9 @@ function hostAtPosition(pos) {
     for (const host of hosts.values()) {
         const dx = pos.x - host.x;
         const dy = pos.y - host.y;
-        if (Math.sqrt(dx * dx + dy * dy) <= host.radius) {
+        // Small blobs still receive clicks within the fixed minimum click area.
+        const clickRadius = Math.max(host.radius, HOST_CLICK_RADIUS);
+        if (dx * dx + dy * dy <= clickRadius * clickRadius) {
             return host;
         }
         // IP label above the blob
@@ -923,12 +932,14 @@ const settings = {
     centeringForce: 0.001,
     packetSpeed: 0.008,
     packetSizeScale: 0.3,
-    minHostSize: 5,
+    minHostSize: DEFAULT_MIN_HOST_SIZE,
     maxHostSize: 44,
     collisionHalo: 43,
     glowDuration: 10,
     passiveTimeout: 120,
     autoRemovePassive: false,
+    autoRemovePassiveRemote: false,
+    fpsLimit: 0,
     velocitySleepThreshold: 0.1,
     forceSleepThreshold: 0.01,
     positionSleepThreshold: 0.05
@@ -966,6 +977,15 @@ bindSlider('velocitySleepThreshold', 'velocitySleepThreshold', (v) => v.toFixed(
 bindSlider('forceSleepThreshold', 'forceSleepThreshold', (v) => v.toFixed(3));
 bindSlider('positionSleepThreshold', 'positionSleepThreshold', (v) => v.toFixed(3));
 
+const fpsLimitInput = document.getElementById('fpsLimit');
+settings.fpsLimit = parseInt(fpsLimitInput.value, 10) || 0;
+fpsLimitInput.addEventListener('change', () => {
+    settings.fpsLimit = parseInt(fpsLimitInput.value, 10) || 0;
+    // Reset frame timing so a new limit takes effect immediately.
+    lastFrameTime = performance.now();
+    nextRenderTime = lastFrameTime;
+});
+
 document.getElementById('menuToggle').addEventListener('click', () => {
     document.getElementById('menuPanel').classList.toggle('hidden');
 });
@@ -989,14 +1009,29 @@ document.getElementById('autoRemovePassive').addEventListener('change', (e) => {
     }
 });
 
+document.getElementById('autoRemovePassiveRemote').addEventListener('change', (e) => {
+    settings.autoRemovePassiveRemote = e.target.checked;
+    if (settings.autoRemovePassiveRemote) {
+        removePassiveRemoteHosts();
+    }
+});
+
 function removePassiveHosts() {
     const now = Date.now();
     removeHosts((host) => now - (host.lastActivityAt || now) > settings.passiveTimeout * 1000);
 }
 
+function removePassiveRemoteHosts() {
+    const now = Date.now();
+    removeHosts((host) => !hostIsLocal(host) &&
+        now - (host.lastActivityAt || now) > settings.passiveTimeout * 1000);
+}
+
 setInterval(() => {
     if (settings.autoRemovePassive) {
         removePassiveHosts();
+    } else if (settings.autoRemovePassiveRemote) {
+        removePassiveRemoteHosts();
     }
 }, 1000);
 
@@ -1764,6 +1799,7 @@ function updateStats() {
 }
 
 let lastFrameTime = performance.now();
+let nextRenderTime = lastFrameTime;
 let needRedraw = true;
 let physicsAccumulator = 0;
 const PHYSICS_STEP = 1 / 30; // Throttle physics to 30Hz
@@ -2061,7 +2097,26 @@ function runPhysics(stepDt) {
 }
 
 function animate() {
+    requestAnimationFrame(animate);
+
     const frameTime = performance.now();
+    const minFrameInterval = settings.fpsLimit > 0 ? 1000 / settings.fpsLimit : 0;
+    if (minFrameInterval > 0) {
+        // Throttle rendering (and physics/particle updates) to the selected
+        // frame rate. Carry the target time forward so the limit does not
+        // drift down on displays whose refresh rate is not a multiple of it.
+        if (frameTime < nextRenderTime) {
+            return;
+        }
+        nextRenderTime += minFrameInterval;
+        // After a long pause (e.g. a backgrounded tab), skip catch-up frames.
+        if (nextRenderTime <= frameTime) {
+            nextRenderTime = frameTime + minFrameInterval;
+        }
+    } else {
+        nextRenderTime = frameTime;
+    }
+
     const dt = Math.min((frameTime - lastFrameTime) / 1000, 0.1);
     lastFrameTime = frameTime;
 
@@ -2076,7 +2131,6 @@ function animate() {
     }
 
     if (!needRedraw && !didPhysics && particles.length === 0 && hostArrayCache.length === 0) {
-        requestAnimationFrame(animate);
         return;
     }
 
@@ -2248,8 +2302,6 @@ function animate() {
     if (hostInfoHost) {
         refreshHostInfo();
     }
-    
-    requestAnimationFrame(animate);
 }
 
 animate();

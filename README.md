@@ -164,7 +164,8 @@ re-apply `setcap` after each build.
   extra vertical spacing to keep IP addresses and hostnames separated. Long IPv6
   addresses are truncated on screen but copied in full.
 - **Clicking** a host (blob or label) copies its IP address to the clipboard and
-  shows a short confirmation toast.
+  shows a short confirmation toast. Small blobs have a fixed minimum click area
+  (twice the default minimum host size) so they are easier to select and drag.
 - **Zooming** — use the `+`/`−` buttons in the bottom-right corner, the mouse wheel
   (zooms toward the cursor), or pinch on a touch device. The frame button fits all
   hosts and labels into view. One finger still drags hosts on touch devices.
@@ -191,6 +192,8 @@ Use the hamburger button in the top-right corner to open the settings panel.
 | Active glow duration | 10 s | How long a host glows after sending a packet (smooth fade in/out). |
 | Passive after | 120 s | Inactivity period before a host is dimmed as passive. |
 | Auto-remove passive hosts | off | Continuously removes hosts once they become passive. |
+| Auto-remove passive remote hosts | off | Continuously removes remote hosts once they become passive. |
+| Frame rate limit | Unlimited | Cap rendering at 15, 30 or 60 FPS, or leave unlimited. |
 
 Buttons:
 
