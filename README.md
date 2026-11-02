@@ -6,6 +6,11 @@ streams updates to a browser-based 2D canvas over WebSockets.
 
 ![screenshot](img/screenshot_01.png)
 
+[![Build linux/amd64](https://github.com/JValtteri/netvis/actions/workflows/build-amd64.yml/badge.svg?branch=main)](https://github.com/JValtteri/netvis/actions/workflows/build-amd64.yml)
+[![Build linux/arm64](https://github.com/JValtteri/netvis/actions/workflows/build-arm64.yml/badge.svg?branch=main)](https://github.com/JValtteri/netvis/actions/workflows/build-arm64.yml)
+[![Build linux/armv7](https://github.com/JValtteri/netvis/actions/workflows/build-armv7.yml/badge.svg?branch=main)](https://github.com/JValtteri/netvis/actions/workflows/build-armv7.yml)
+[![Unit tests](https://github.com/JValtteri/netvis/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/JValtteri/netvis/actions/workflows/test.yml)
+
 ## Inspiration
 
 This tool was inspired by [OIP](https://github.com/USU-Security/oip), a network visualization tool, as mentioned by **Neil Wyler** (a.k.a **Grifter**) in one of his talks, is used at the [Black Hat conference](https://blackhat.com/index.html) NOC. The original tool was written in C++ and had to be built from source. The setup and use was difficult, and in my testing, it wasn't very reliable. 
@@ -77,7 +82,7 @@ The resulting `netvis` binary is placed in the current directory (it is already
 listed in `.gitignore`).
 
 Release binaries are built statically in CI (see
-[`.github/workflows/build-release.yml`](.github/workflows/build-release.yml)).
+[`.github/workflows/build-platform.yml`](.github/workflows/build-platform.yml)).
 
 ## Test
 

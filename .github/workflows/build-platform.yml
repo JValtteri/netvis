@@ -1,0 +1,93 @@
+name: Build platform binary
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: Release architecture name
+        required: true
+        type: string
+      platform:
+        description: Docker platform to build for
+        required: true
+        type: string
+      goarm:
+        description: GOARM value for 32-bit ARM builds
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.23"
+
+jobs:
+  build:
+    name: Build linux-${{ inputs.arch }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build binary
+        env:
+          PLATFORM: ${{ inputs.platform }}
+          ARCH: ${{ inputs.arch }}
+          GOARM_VALUE: ${{ inputs.goarm }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/netvis-linux-${ARCH}"
+
+          # Build inside a container for the target architecture so cgo can
+          # link against that architecture's libpcap. Alpine's libpcap is
+          # built without optional backends, which allows a fully static
+          # binary that has no runtime library dependencies.
+          docker run --rm -i \
+            --platform "${PLATFORM}" \
+            -e HOME=/tmp \
+            -e GOPATH=/tmp/go \
+            -e GOCACHE=/tmp/go-cache \
+            -e ARCH="${ARCH}" \
+            -e GOARM_VALUE="${GOARM_VALUE}" \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
+            -v "${PWD}:/src" \
+            -w /src \
+            "golang:${GO_VERSION}-alpine" \
+            sh -s <<'EOF'
+          set -eu
+          apk add --no-cache build-base libpcap-dev >/dev/null
+          if [ -n "${GOARM_VALUE}" ]; then
+            export GOARM="${GOARM_VALUE}"
+          fi
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -ldflags '-s -w -linkmode external -extldflags "-static"' \
+            -o "dist/netvis-linux-${ARCH}/netvis" \
+            ./cmd/netvis
+          chown -R "${HOST_UID}:${HOST_GID}" "dist/netvis-linux-${ARCH}"
+          EOF
+
+      - name: Package zip
+        env:
+          ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          stage="dist/netvis-linux-${ARCH}"
+          mkdir -p "${stage}/web"
+          cp -r web/. "${stage}/web/"
+          cp README.md LICENSE "${stage}/"
+          (cd dist && zip -qr "netvis-linux-${ARCH}.zip" "netvis-linux-${ARCH}")
+          unzip -l "dist/netvis-linux-${ARCH}.zip"
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: netvis-linux-${{ inputs.arch }}
+          path: dist/netvis-linux-${{ inputs.arch }}.zip
+          if-no-files-found: error
