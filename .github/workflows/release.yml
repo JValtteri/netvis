@@ -98,7 +98,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD_NUMBER: ${{ steps.builds.outputs.version }}
           SHA: ${{ github.event.workflow_run.head_sha }}
-          TAG: v0.1.${{ steps.builds.outputs.version }}
+          TAG: v0.${{ steps.builds.outputs.version }}
         run: |
           set -euo pipefail
 
