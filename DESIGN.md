@@ -320,35 +320,142 @@ frontend, and integration steps below are complete.
       overlapping existing hosts' influence spheres, replacing the expensive
       edge-crossing candidate scan.
 
+### Backend memory and long-run stability ideas
+
+The backend keeps hosts, edges, and resolution caches for the lifetime of the
+process. Frontend removal controls only change browser state, so they do not
+free server memory. The ideas below are grouped by the failure mode they
+address. IDs are stable and intended for referencing in discussions and
+commits.
+
+#### Bounded memory growth
+
+- **B1 — Expire idle hosts and edges with a TTL.** Record `LastSeen` on every
+  host and edge and run a periodic janitor that removes entries idle beyond a
+  configurable TTL, pruning their edges and cache entries at the same time.
+  *Reasoning:* every unique IP and directed pair observed since startup is
+  retained forever, so a long-running capture grows without bound.
+- **B2 — Enforce hard caps with least-recently-active eviction.** Add
+  configurable maximum host and edge counts and evict the least recently active
+  entries when a cap is reached. *Reasoning:* a TTL alone still permits a large
+  burst of new addresses to exhaust memory; a cap gives a predictable worst
+  case.
+- **B3 — Bound and purge resolution caches.** Give `nameCache` and
+  `nameGroups` a TTL and size limit, and delete a host's cache entry when the
+  host is evicted. *Reasoning:* both maps only ever grow, including permanent
+  negative DNS/whois results, and stale names are never refreshed.
+- **B4 — Bound queues by bytes, not only message count.** Apply byte budgets
+  to `pendingBatch` and each client's `send` channel, in addition to the
+  existing message-count limits. *Reasoning:* 2048 batch messages or 256 queued
+  client messages can each be very large when host messages carry long group
+  address lists.
+- **B5 — Cap concurrent WebSocket clients.** Set a maximum number of
+  connections and reject or queue excess clients. *Reasoning:* each client
+  reserves a 256-message buffer and receives a full snapshot; with a permissive
+  origin check, unbounded connections are a memory and file-descriptor risk.
+
+#### Bounded lookup work
+
+- **B6 — Resolve names through a fixed worker pool.** Replace the goroutine
+  started per new IP with a small pool and a bounded work queue, dropping or
+  delaying work when the queue is full. *Reasoning:* a burst of new addresses
+  can create thousands of goroutines and sockets at once.
+- **B7 — Use context-aware DNS with cancellation.** Call a resolver that
+  accepts a context instead of wrapping `net.LookupAddr` in a goroutine and
+  `time.After`. *Reasoning:* a timed-out lookup can leave its goroutine and
+  timer alive until the resolver returns, so leaks accumulate under load.
+- **B8 — Rate-limit and share whois queries.** Add a global whois limiter and
+  cache the IANA referral by prefix so concurrent lookups do not repeat the
+  same chain. *Reasoning:* each external host can trigger up to six TCP queries
+  over tens of seconds, risking file-descriptor exhaustion and rate limiting by
+  the RIRs.
+- **B9 — Cache whois results by network prefix.** Key organization and country
+  results by the containing CIDR rather than by individual IP. *Reasoning:*
+  whois answers describe allocation blocks, so many hosts share one result;
+  per-IP caching repeats queries and stores redundant data.
+- **B10 — Cap whois response buffers more tightly.** Lower the 1 MiB
+  per-response limit or stream-parse the fields of interest. *Reasoning:* each
+  in-flight lookup can hold a large buffer, and the useful fields usually
+  appear early in the response.
+- **B11 — Expire or back off negative lookup results.** Keep failed lookups
+  cached for a bounded time instead of forever. *Reasoning:* permanent negative
+  caching avoids retry storms but never frees memory and can hide transient
+  resolver failures.
+
+#### Algorithmic scaling and CPU
+
+- **B12 — Index host groups incrementally.** Maintain a
+  `hostname/group → members` index instead of scanning every host on each
+  resolution. *Reasoning:* `applyResolvedDetails` is O(N) per resolved host,
+  which becomes O(N²) over a long run.
+- **B13 — Share group address lists.** Store group membership once and derive
+  `IPs` at snapshot time, or share a read-only slice, instead of copying the
+  full list into every member. *Reasoning:* a group with k addresses currently
+  stores k slices of k strings, which is O(k²) memory.
+- **B14 — Send incremental group updates.** Broadcast the changed host or a
+  compact group update instead of every member when one address joins a group.
+  *Reasoning:* joining a k-address group currently emits O(k) updates and
+  produces O(k²) messages over the group's lifetime.
+- **B15 — Reduce snapshot cost and lock hold time.** Copy state before
+  marshaling, send snapshots without an unconditional blocking channel send,
+  and consider streaming or paginating large snapshots. *Reasoning:* a snapshot
+  holds the graph read lock while copying every host and edge, and a large one
+  can stall capture-side updates and the hub.
+- **B16 — Reuse per-window buffers and allocation-free keys.** Reuse the
+  traffic map and batch slice, and key edges with a struct or `netip.Addr`
+  instead of a concatenated string. *Reasoning:* allocating a map every 16 ms
+  and building a string key per packet creates GC pressure that grows with
+  traffic volume.
+
+#### Observability and validation
+
+- **B17 — Expose state metrics and pprof.** Add a metrics endpoint for host,
+  edge, cache, pending-lookup, goroutine, and heap counts, plus
+  `net/http/pprof`. *Reasoning:* there is currently no way to see which store
+  is growing before the process runs out of memory.
+- **B18 — Add scale and long-run tests.** Feed synthetic workloads with many
+  unique IPs and assert that eviction, caps, and cache bounds hold.
+  *Reasoning:* existing tests cover correctness and batching, not growth over
+  time.
+- **B19 — Let clients request deletion (complementary).** Add a WebSocket
+  message for the frontend's remove actions so the server can free state
+  promptly. *Reasoning:* the UI's remove buttons currently affect only browser
+  state; authoritative TTLs and caps should remain, but explicit deletion
+  avoids keeping data the user already discarded.
+
 ### Remaining performance improvement ideas
 
-- [ ] Consider compact array records or binary encoding for traffic messages on
-      very large graphs.
-- [ ] Cache label measurements/bounds per host, keyed by label text and rounded
-      radius, and avoid clearing the whole cache whenever a radius changes.
-      Reuse the cached measurements while drawing instead of calling
+- [ ] **P1** — Consider compact array records or binary encoding for traffic
+      messages on very large graphs.
+- [ ] **P2** — Cache label measurements/bounds per host, keyed by label text and
+      rounded radius, and avoid clearing the whole cache whenever a radius
+      changes. Reuse the cached measurements while drawing instead of calling
       `measureText` for every label every frame.
-- [ ] Draw all regular edges in a single path and stroke once, and batch the
-      glowing frontend edges similarly, instead of one `beginPath`/`stroke` per
-      edge.
-- [ ] Use cached pre-rendered sprites for host glow as well; host rendering
-      still uses a per-host `shadowBlur`.
-- [ ] Cache locality per host (`isLocalIP`) instead of parsing the IP string for
-      every edge during physics and rendering.
-- [ ] Reuse the undirected adjacency map across physics steps, avoid per-step
-      object/sort allocations during angle distribution, and use numeric
-      collision-pair keys instead of string keys in the processed-pair set.
-- [ ] Skip physics entirely when all hosts are below the sleep thresholds and no
-      layout input, host set, or drag state has changed.
-- [ ] Object pooling or a ring buffer for particles to reduce allocation and GC
-      pressure.
-- [ ] Add adaptive quality controls: lower the particle budget, skip glow, or
-      reduce physics/render rates when frame time exceeds a target budget.
-- [ ] Limit `frontendConnections` set size with TTL/LRU cleanup.
-- [ ] Rate-limit/cache whois lookups more aggressively and add a bounded lookup
-      worker pool for very large host sets.
-- [ ] Persist or replay capture sessions (pcap export/import).
-- [ ] Support VLAN/MPLS and improve IPv6 handling.
-- [ ] Use OffscreenCanvas/Web Worker for rendering on large graphs.
-- [ ] Consider WebGL renderer for improved performance with many hosts/particles.
-- [ ] Incremental spatial grid updates instead of full rebuilds each physics step.
+- [ ] **P3** — Draw all regular edges in a single path and stroke once, and batch
+      the glowing frontend edges similarly, instead of one
+      `beginPath`/`stroke` per edge.
+- [ ] **P4** — Use cached pre-rendered sprites for host glow as well; host
+      rendering still uses a per-host `shadowBlur`.
+- [ ] **P5** — Cache locality per host (`isLocalIP`) instead of parsing the IP
+      string for every edge during physics and rendering.
+- [ ] **P6** — Reuse the undirected adjacency map across physics steps, avoid
+      per-step object/sort allocations during angle distribution, and use
+      numeric collision-pair keys instead of string keys in the processed-pair
+      set.
+- [ ] **P7** — Skip physics entirely when all hosts are below the sleep
+      thresholds and no layout input, host set, or drag state has changed.
+- [ ] **P8** — Object pooling or a ring buffer for particles to reduce allocation
+      and GC pressure.
+- [ ] **P9** — Add adaptive quality controls: lower the particle budget, skip
+      glow, or reduce physics/render rates when frame time exceeds a target
+      budget.
+- [ ] **P10** — Limit `frontendConnections` set size with TTL/LRU cleanup.
+- [ ] **P11** — Rate-limit/cache whois lookups more aggressively and add a
+      bounded lookup worker pool for very large host sets (expanded in B6–B9).
+- [ ] **P12** — Persist or replay capture sessions (pcap export/import).
+- [ ] **P13** — Support VLAN/MPLS and improve IPv6 handling.
+- [ ] **P14** — Use OffscreenCanvas/Web Worker for rendering on large graphs.
+- [ ] **P15** — Consider WebGL renderer for improved performance with many
+      hosts/particles.
+- [ ] **P16** — Incremental spatial grid updates instead of full rebuilds each
+      physics step.
