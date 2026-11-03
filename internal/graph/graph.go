@@ -22,6 +22,8 @@ type Host struct {
 	Hostname     string `json:"hostname"`
 	Organization string `json:"organization,omitempty"`
 	Country      string `json:"country,omitempty"`
+
+	lastSeen time.Time
 }
 
 // hostDetails is the result of an asynchronous display-name lookup. Hostname
@@ -38,6 +40,8 @@ type Edge struct {
 	DstIP string `json:"dstIP"`
 	Count int64  `json:"count"`
 	Bytes int64  `json:"bytes"`
+
+	lastSeen time.Time
 }
 
 type Graph struct {
@@ -46,6 +50,11 @@ type Graph struct {
 	edges   map[string]*Edge
 	onHost  func(Host)
 	resolve func(string) hostDetails
+
+	// hostTTL and maxHosts control optional server-side eviction. Zero values
+	// keep all observed state for the lifetime of the process.
+	hostTTL  time.Duration
+	maxHosts int
 
 	// nameGroups maps a resolved hostname to the canonical group (the first IP
 	// that resolved to that name). It lets IPv4 and IPv6 addresses of the same
@@ -68,6 +77,74 @@ func New() *Graph {
 	}
 }
 
+// SetRetention configures optional server-side eviction. A non-positive
+// hostTTL disables age-based expiry, and a non-positive maxHosts disables the
+// host cap. With both disabled (the default) all observed state is kept.
+func (g *Graph) SetRetention(hostTTL time.Duration, maxHosts int) {
+	if hostTTL < 0 {
+		hostTTL = 0
+	}
+	if maxHosts < 0 {
+		maxHosts = 0
+	}
+
+	g.mu.Lock()
+	g.hostTTL = hostTTL
+	g.maxHosts = maxHosts
+	g.pruneLocked(time.Now())
+	g.mu.Unlock()
+}
+
+// StartRetention starts a background janitor that applies the configured
+// retention policy every interval. It returns a function that stops the
+// janitor. If retention is disabled, it returns a no-op.
+func (g *Graph) StartRetention(interval time.Duration) func() {
+	g.mu.RLock()
+	enabled := g.hostTTL > 0 || g.maxHosts > 0
+	g.mu.RUnlock()
+	if !enabled {
+		return func() {}
+	}
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				g.Prune(time.Now())
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(stop)
+			<-done
+		})
+	}
+}
+
+// Prune applies the configured retention policy once. A zero now uses the
+// current time.
+func (g *Graph) Prune(now time.Time) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	g.mu.Lock()
+	g.pruneLocked(now)
+	g.mu.Unlock()
+}
+
 // SetHostUpdateHandler registers a callback invoked when a host's display name
 // (hostname or whois organization) has been resolved asynchronously.
 func (g *Graph) SetHostUpdateHandler(fn func(Host)) {
@@ -82,29 +159,53 @@ func (g *Graph) edgeKey(src, dst string) string {
 
 func (g *Graph) Apply(ev capture.Event) {
 	var newHosts []string
+	now := time.Now()
 
 	g.mu.Lock()
-	// Ensure hosts exist
-	if _, ok := g.hosts[ev.SrcIP]; !ok {
-		g.hosts[ev.SrcIP] = newHost(ev.SrcIP, g.cachedDetails(ev.SrcIP))
+	// Ensure hosts exist and record activity.
+	src, ok := g.hosts[ev.SrcIP]
+	if !ok {
+		src = newHost(ev.SrcIP, g.cachedDetails(ev.SrcIP), now)
+		g.hosts[ev.SrcIP] = src
 		newHosts = append(newHosts, ev.SrcIP)
 	}
-	if _, ok := g.hosts[ev.DstIP]; !ok {
-		g.hosts[ev.DstIP] = newHost(ev.DstIP, g.cachedDetails(ev.DstIP))
+	src.lastSeen = now
+
+	dst, ok := g.hosts[ev.DstIP]
+	if !ok {
+		dst = newHost(ev.DstIP, g.cachedDetails(ev.DstIP), now)
+		g.hosts[ev.DstIP] = dst
 		newHosts = append(newHosts, ev.DstIP)
 	}
+	dst.lastSeen = now
 
 	k := g.edgeKey(ev.SrcIP, ev.DstIP)
 	if e, ok := g.edges[k]; ok {
 		e.Count++
 		e.Bytes += int64(ev.Bytes)
+		e.lastSeen = now
 	} else {
 		g.edges[k] = &Edge{
-			SrcIP: ev.SrcIP,
-			DstIP: ev.DstIP,
-			Count: 1,
-			Bytes: int64(ev.Bytes),
+			SrcIP:    ev.SrcIP,
+			DstIP:    ev.DstIP,
+			Count:    1,
+			Bytes:    int64(ev.Bytes),
+			lastSeen: now,
 		}
+	}
+
+	if g.maxHosts > 0 && len(g.hosts) > g.maxHosts {
+		if g.enforceMaxHostsLocked() {
+			g.rebuildGroupsLocked()
+		}
+		// Do not start lookups for hosts that were just evicted.
+		kept := newHosts[:0]
+		for _, ip := range newHosts {
+			if _, ok := g.hosts[ip]; ok {
+				kept = append(kept, ip)
+			}
+		}
+		newHosts = kept
 	}
 	g.mu.Unlock()
 
@@ -119,7 +220,7 @@ func (g *Graph) cachedDetails(ip string) hostDetails {
 	return g.nameCache[ip]
 }
 
-func newHost(ip string, details hostDetails) *Host {
+func newHost(ip string, details hostDetails, now time.Time) *Host {
 	return &Host{
 		IP:           ip,
 		IPs:          []string{ip},
@@ -127,6 +228,7 @@ func newHost(ip string, details hostDetails) *Host {
 		Hostname:     details.Hostname,
 		Organization: details.Organization,
 		Country:      details.Country,
+		lastSeen:     now,
 	}
 }
 
@@ -215,6 +317,149 @@ func (g *Graph) applyResolvedDetails(ip string, details hostDetails) {
 	}
 	for _, updated := range updates {
 		cb(updated)
+	}
+}
+
+// pruneLocked applies the configured retention policy. The caller must hold
+// g.mu.
+func (g *Graph) pruneLocked(now time.Time) {
+	removed := false
+	if g.hostTTL > 0 {
+		for ip, h := range g.hosts {
+			if now.Sub(h.lastSeen) > g.hostTTL {
+				g.removeHostLocked(ip)
+				removed = true
+			}
+		}
+		for key, e := range g.edges {
+			if now.Sub(e.lastSeen) > g.hostTTL {
+				delete(g.edges, key)
+			}
+		}
+	}
+	if g.enforceMaxHostsLocked() {
+		removed = true
+	}
+	if removed {
+		g.rebuildGroupsLocked()
+	}
+}
+
+// enforceMaxHostsLocked removes the least recently active hosts until the host
+// cap is satisfied. The caller must hold g.mu.
+func (g *Graph) enforceMaxHostsLocked() bool {
+	if g.maxHosts <= 0 || len(g.hosts) <= g.maxHosts {
+		return false
+	}
+
+	excess := len(g.hosts) - g.maxHosts
+	if excess > 16 {
+		type hostAge struct {
+			ip       string
+			lastSeen time.Time
+		}
+		hosts := make([]hostAge, 0, len(g.hosts))
+		for ip, h := range g.hosts {
+			hosts = append(hosts, hostAge{ip: ip, lastSeen: h.lastSeen})
+		}
+		sort.Slice(hosts, func(i, j int) bool {
+			if hosts[i].lastSeen.Equal(hosts[j].lastSeen) {
+				return hosts[i].ip < hosts[j].ip
+			}
+			return hosts[i].lastSeen.Before(hosts[j].lastSeen)
+		})
+		for _, h := range hosts[:excess] {
+			g.removeHostLocked(h.ip)
+		}
+		return true
+	}
+
+	// The common case adds one or two hosts at a time, so finding the oldest
+	// host repeatedly is cheaper than sorting the whole map on every event.
+	for i := 0; i < excess; i++ {
+		oldestIP := ""
+		var oldest time.Time
+		for ip, h := range g.hosts {
+			if oldestIP == "" || h.lastSeen.Before(oldest) ||
+				(h.lastSeen.Equal(oldest) && ip < oldestIP) {
+				oldestIP = ip
+				oldest = h.lastSeen
+			}
+		}
+		if oldestIP == "" {
+			break
+		}
+		g.removeHostLocked(oldestIP)
+	}
+	return true
+}
+
+// removeHostLocked deletes a host together with its edges and cached lookup
+// data. The caller must hold g.mu.
+func (g *Graph) removeHostLocked(ip string) {
+	delete(g.hosts, ip)
+	for key, e := range g.edges {
+		if e.SrcIP == ip || e.DstIP == ip {
+			delete(g.edges, key)
+		}
+	}
+
+	g.lookupMu.Lock()
+	delete(g.nameCache, ip)
+	g.lookupMu.Unlock()
+
+	for name, canonical := range g.nameGroups {
+		if canonical == ip {
+			delete(g.nameGroups, name)
+		}
+	}
+}
+
+// rebuildGroupsLocked recomputes each group's address list and repairs the
+// hostname-to-canonical mapping after hosts have been removed. The caller must
+// hold g.mu.
+func (g *Graph) rebuildGroupsLocked() {
+	groups := make(map[string][]string, len(g.hosts))
+	for ip, h := range g.hosts {
+		group := h.Group
+		if group == "" {
+			group = ip
+		}
+		groups[group] = append(groups[group], ip)
+	}
+
+	// Drop name mappings whose canonical host no longer exists.
+	for name, canonical := range g.nameGroups {
+		if _, ok := groups[canonical]; !ok {
+			delete(g.nameGroups, name)
+		}
+	}
+
+	for group, members := range groups {
+		sort.Slice(members, func(i, j int) bool { return ipSortLess(members[i], members[j]) })
+
+		canonical := group
+		if _, ok := g.hosts[canonical]; !ok {
+			// The old canonical address was evicted; promote a remaining member.
+			canonical = members[0]
+		}
+
+		hostname := ""
+		for _, ip := range members {
+			if h := g.hosts[ip]; h.Hostname != "" {
+				hostname = h.Hostname
+				break
+			}
+		}
+		if hostname != "" {
+			g.nameGroups[hostname] = canonical
+		}
+
+		for _, ip := range members {
+			h := g.hosts[ip]
+			h.Group = canonical
+			h.IPs = append([]string(nil), members...)
+		}
 	}
 }
 

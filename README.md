@@ -122,6 +122,8 @@ relative to the current working directory.
 | `-iface` | yes | Network interface to capture on (e.g. `eth0`, `wlan0`, `any`). |
 | `-filter` | no | BPF capture filter, e.g. `tcp port 80`, `udp`, `host 192.168.1.10`. |
 | `-addr` | no | HTTP listen address, defaults to `:3993`. |
+| `-host-ttl` | no | Remove hosts and edges idle longer than this duration, e.g. `24h`. Defaults to `0`, which keeps everything. |
+| `-max-hosts` | no | Maximum number of hosts to retain, evicting the least recently active first. Defaults to `0`, which is unlimited. |
 
 ### Finding an interface
 
@@ -223,6 +225,8 @@ DESIGN.md            Design document and implementation notes
    that resolve to the same hostname share one host identity, so a dual-stack
    host appears as a single blob. Resolved details are streamed to clients as
    `host` messages and fill in the label and host info window when they arrive.
+   By default hosts and edges are retained for the lifetime of the process;
+   `-host-ttl` and `-max-hosts` opt into server-side eviction.
 3. `server` aggregates events per directed edge, protocol, and frontend flag
    over a fixed 16 ms window, broadcasts compact `traffic` records (with host
    messages batched alongside them), and sends a full snapshot when a client

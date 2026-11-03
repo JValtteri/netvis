@@ -330,16 +330,18 @@ commits.
 
 #### Bounded memory growth
 
-- **B1 — Expire idle hosts and edges with a TTL.** Record `LastSeen` on every
-  host and edge and run a periodic janitor that removes entries idle beyond a
-  configurable TTL, pruning their edges and cache entries at the same time.
-  *Reasoning:* every unique IP and directed pair observed since startup is
-  retained forever, so a long-running capture grows without bound.
-- **B2 — Enforce hard caps with least-recently-active eviction.** Add
+- [x] **B1 — Expire idle hosts and edges with a TTL.** Record `LastSeen` on
+  every host and edge and run a periodic janitor that removes entries idle
+  beyond a configurable TTL, pruning their edges and cache entries at the same
+  time. *Reasoning:* every unique IP and directed pair observed since startup is
+  retained forever, so a long-running capture grows without bound. Implemented
+  as `-host-ttl`; the default `0` keeps everything.
+- [ ] **B2 — Enforce hard caps with least-recently-active eviction.** Add
   configurable maximum host and edge counts and evict the least recently active
   entries when a cap is reached. *Reasoning:* a TTL alone still permits a large
   burst of new addresses to exhaust memory; a cap gives a predictable worst
-  case.
+  case. The host-cap portion is implemented as `-max-hosts`; an edge cap
+  remains future work.
 - **B3 — Bound and purge resolution caches.** Give `nameCache` and
   `nameGroups` a TTL and size limit, and delete a host's cache entry when the
   host is evicted. *Reasoning:* both maps only ever grow, including permanent

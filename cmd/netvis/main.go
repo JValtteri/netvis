@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"netvis/internal/capture"
 	"netvis/internal/graph"
@@ -17,13 +18,25 @@ func main() {
 	iface := flag.String("iface", "", "Network interface to capture on (e.g. eth0, wlan0, any)")
 	bpf := flag.String("filter", "", "BPF filter (optional)")
 	addr := flag.String("addr", ":3993", "HTTP listen address")
+	hostTTL := flag.Duration("host-ttl", 0, "Remove hosts and edges idle longer than this duration (0 keeps everything, e.g. 24h)")
+	maxHosts := flag.Int("max-hosts", 0, "Maximum hosts to retain, evicting least recently active first (0 = unlimited)")
 	flag.Parse()
 
 	if *iface == "" {
 		log.Fatal("must specify -iface (e.g. eth0, wlan0, any)")
 	}
+	if *hostTTL < 0 {
+		log.Fatal("-host-ttl must not be negative")
+	}
+	if *maxHosts < 0 {
+		log.Fatal("-max-hosts must not be negative")
+	}
 
 	g := graph.New()
+	g.SetRetention(*hostTTL, *maxHosts)
+	stopRetention := g.StartRetention(30 * time.Second)
+	defer stopRetention()
+
 	hub := server.NewHub(g, *addr)
 	g.SetHostUpdateHandler(hub.BroadcastHost)
 	go hub.Run()
