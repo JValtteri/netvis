@@ -68,6 +68,25 @@ func TestDetectServerIPs(t *testing.T) {
 	}
 }
 
+func TestExtractPort(t *testing.T) {
+	tests := []struct {
+		addr string
+		want int
+	}{
+		{":3993", 3993},
+		{"0.0.0.0:8080", 8080},
+		{"[::]:3993", 3993},
+		{"localhost:9000", 9000},
+		{"", 3993},
+		{"localhost", 3993},
+	}
+	for _, tt := range tests {
+		if got := extractPort(tt.addr); got != tt.want {
+			t.Errorf("extractPort(%q) = %d, want %d", tt.addr, got, tt.want)
+		}
+	}
+}
+
 func TestHubAggregatesPackets(t *testing.T) {
 	g := graph.New()
 	hub := NewHub(g, ":3993")

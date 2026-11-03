@@ -171,7 +171,9 @@ and normalizes them to one-record aggregates.
 - Dragging a blob repositions it and temporarily excludes it from physics.
 - A host info window opens next to the host after hovering it for 0.5 s, or when
   the host is clicked. Clicking a host pins the window; clicking anywhere outside
-  the window dismisses it.
+  the window dismisses it. Small blobs use a fixed minimum click area of twice the
+  default minimum host size, so they are easier to click and drag; the extra area
+  applies only when the blob itself is smaller than that.
 - The window shows the host's IPv4 and IPv6 addresses (each on its own line,
   omitted when the host has no address of that family), hostname, organization,
   country, total packet count (sent + received), total data sent, total data
@@ -207,6 +209,10 @@ Sliders:
 - Passive timeout (default 120 s)
 - Auto-remove passive hosts (checkbox, off by default; checked hosts are pruned
   continuously once they become passive)
+- Auto-remove passive remote hosts (checkbox, off by default; only non-local
+  hosts are pruned once they become passive)
+- Frame rate limit (Unlimited, 15, 30 or 60 FPS; limits rendering and physics
+  updates and defaults to Unlimited)
 
 Buttons:
 

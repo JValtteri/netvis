@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -78,21 +77,15 @@ func extractPort(addr string) int {
 	if addr == "" {
 		return defaultPort
 	}
-	// Handle IPv6 addresses
-	if strings.HasPrefix(addr, "[") {
-		if idx := strings.LastIndex(addr, ":"); idx != -1 {
-			if p, err := strconv.Atoi(addr[idx+1 : len(addr)-1]); err == nil {
-				return p
-			}
-		}
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
 		return defaultPort
 	}
-	if idx := strings.LastIndex(addr, ":"); idx != -1 {
-		if p, err := strconv.Atoi(addr[idx+1:]); err == nil {
-			return p
-		}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p <= 0 {
+		return defaultPort
 	}
-	return defaultPort
+	return p
 }
 
 // detectServerIPs returns the addresses assigned to this machine, across all
