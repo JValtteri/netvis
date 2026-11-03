@@ -936,9 +936,8 @@ const settings = {
     collisionHalo: 43,
     glowDuration: 10,
     passiveTimeout: 120,
-    autoRemovePassive: false,
-    autoRemovePassiveRemote: false,
-    fpsLimit: 0,
+    autoRemoveMode: 'none',
+    fpsLimit: 60,
     velocitySleepThreshold: 0.1,
     forceSleepThreshold: 0.01,
     positionSleepThreshold: 0.05
@@ -989,6 +988,14 @@ document.getElementById('menuToggle').addEventListener('click', () => {
     document.getElementById('menuPanel').classList.toggle('hidden');
 });
 
+for (const toggle of document.querySelectorAll('.menu-group-toggle')) {
+    toggle.addEventListener('click', () => {
+        const group = toggle.closest('.menu-group');
+        const collapsed = group.classList.toggle('collapsed');
+        toggle.setAttribute('aria-expanded', String(!collapsed));
+    });
+}
+
 document.getElementById('legendToggle').addEventListener('click', () => {
     const info = document.getElementById('info');
     const collapsed = info.classList.toggle('collapsed');
@@ -1001,19 +1008,17 @@ document.getElementById('removeSilent').addEventListener('click', () => {
 
 document.getElementById('removePassive').addEventListener('click', removePassiveHosts);
 
-document.getElementById('autoRemovePassive').addEventListener('change', (e) => {
-    settings.autoRemovePassive = e.target.checked;
-    if (settings.autoRemovePassive) {
-        removePassiveHosts();
-    }
-});
-
-document.getElementById('autoRemovePassiveRemote').addEventListener('change', (e) => {
-    settings.autoRemovePassiveRemote = e.target.checked;
-    if (settings.autoRemovePassiveRemote) {
-        removePassiveRemoteHosts();
-    }
-});
+for (const input of document.querySelectorAll('input[name="autoRemoveMode"]')) {
+    input.addEventListener('change', (e) => {
+        if (!e.target.checked) return;
+        settings.autoRemoveMode = e.target.value;
+        if (settings.autoRemoveMode === 'remote') {
+            removePassiveRemoteHosts();
+        } else if (settings.autoRemoveMode === 'all') {
+            removePassiveHosts();
+        }
+    });
+}
 
 function removePassiveHosts() {
     const now = Date.now();
@@ -1027,9 +1032,9 @@ function removePassiveRemoteHosts() {
 }
 
 setInterval(() => {
-    if (settings.autoRemovePassive) {
+    if (settings.autoRemoveMode === 'all') {
         removePassiveHosts();
-    } else if (settings.autoRemovePassiveRemote) {
+    } else if (settings.autoRemoveMode === 'remote') {
         removePassiveRemoteHosts();
     }
 }, 1000);

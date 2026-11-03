@@ -172,11 +172,49 @@ body {
     border-bottom: none;
 }
 
-.menu-group-title {
+.menu-group-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0;
+    font: inherit;
     font-size: 11px;
+    text-align: left;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: #aaa;
+    background: none;
+    border: none;
+    cursor: pointer;
+}
+
+.menu-group-toggle:hover {
+    color: #ddd;
+}
+
+.menu-group-toggle:focus-visible {
+    outline: 1px solid #4a90e2;
+    outline-offset: 2px;
+}
+
+.menu-group-chevron {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    margin-right: 2px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    transition: transform 0.15s ease;
+}
+
+.menu-group.collapsed .menu-group-chevron {
+    transform: rotate(-45deg);
+}
+
+.menu-group.collapsed > :not(.menu-group-toggle) {
+    display: none;
 }
 
 .slider-row {
@@ -239,27 +277,23 @@ body {
     outline: 1px solid #4a90e2;
 }
 
-.checkbox-group {
+.radio-group {
     display: flex;
     flex-direction: column;
     gap: 8px;
 }
 
-.checkbox-group .checkbox-row {
-    margin-top: 0;
-}
-
-.checkbox-row {
+.radio-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 12px;
     font-size: 12px;
     color: #ccc;
     cursor: pointer;
 }
 
-.checkbox-row input[type="checkbox"] {
+.radio-row input[type="radio"] {
+    flex: none;
     width: 14px;
     height: 14px;
     accent-color: #4a90e2;
