@@ -1,52 +1,33 @@
 # NetVis — Network Traffic Visualizer
 
-A live, graphical representation of network traffic. NetVis captures packets from a
-network interface with libpcap, aggregates them into a host/connection graph, and
-streams updates to a browser-based 2D canvas over WebSockets.
+**[Wireshark](https://www.wireshark.org/download.html) is nice and all, but when you don't want to *go deep* and want to instantly see when an app phones home, visualize active connections, or just look cool at your [LAN party](https://www.wikihow.com/Host-a-LAN-Party), NetVis is easy and intuitive for anyone who casually browses GitHub for obscure projects.**
 
-![screenshot](img/screenshot_01.png)
+
+This tool was inspired by **[OIP](https://github.com/USU-Security/oip)**, a network visualization tool, as mentioned by **Neil Wyler** (a.k.a **Grifter**) in [one of his talks](https://www.youtube.com/watch?v=l7eP62fBLOM), used at the **[Black Hat conference](https://blackhat.com/index.html)** NOC. The original tool was written in C++ and had to be built from source. The setup and use was difficult, and the general UX wasn't that great.
+
+I wanted to try making a similar tool with more modern, and user friendly setup and interface. Thus was born NetVis.
+
 
 [![Build linux/amd64](https://github.com/JValtteri/netvis/actions/workflows/build-amd64.yml/badge.svg?branch=main)](https://github.com/JValtteri/netvis/actions/workflows/build-amd64.yml)
 [![Build linux/arm64](https://github.com/JValtteri/netvis/actions/workflows/build-arm64.yml/badge.svg?branch=main)](https://github.com/JValtteri/netvis/actions/workflows/build-arm64.yml)
 [![Build linux/armv7](https://github.com/JValtteri/netvis/actions/workflows/build-armv7.yml/badge.svg?branch=main)](https://github.com/JValtteri/netvis/actions/workflows/build-armv7.yml)
 [![Unit tests](https://github.com/JValtteri/netvis/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/JValtteri/netvis/actions/workflows/test.yml)
 
-## Inspiration
 
-This tool was inspired by [OIP](https://github.com/USU-Security/oip), a network visualization tool, as mentioned by **Neil Wyler** (a.k.a **Grifter**) in one of his talks, is used at the [Black Hat conference](https://blackhat.com/index.html) NOC. The original tool was written in C++ and had to be built from source. The setup and use was difficult, and in my testing, it wasn't very reliable. 
+![screenshot](img/screenshot_01.png)
 
-I wanted to try making a similar tool with more modern, and user friendly setup and interface. Thus was born NetVis.
+## Index
 
-## Requirements
-
-To build from source:
-
-- Go 1.23 or newer
-- Linux with `libpcap` development headers (cgo is used)
-
-To run NetVis:
-
-- Linux (prebuilt release binaries are statically linked and do not require
-  `libpcap` to be installed)
-- Root privileges or `CAP_NET_RAW`/`CAP_NET_ADMIN` for live capture
-
-Install libpcap headers on Debian/Ubuntu:
-
-```bash
-sudo apt install libpcap-dev
-```
-
-On Fedora/RHEL:
-
-```bash
-sudo dnf install libpcap-devel
-```
-
-On Arch:
-
-```bash
-sudo pacman -S libpcap
-```
+- [Download](#download)
+- [Run](#run)
+- [Using the UI](#using-the-ui)
+- [Build from source](#build-from-source)
+- [Requirements](#requirements)
+- [Test](#test)
+- [Project layout](#project-layout)
+- [How it works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ## Download
 
@@ -71,30 +52,6 @@ sudo ./netvis -iface eth0
 
 New builds are produced automatically when changes are pushed to `main` and are
 attached to draft releases, which can then be published.
-
-## Build from source
-
-```bash
-go build -o netvis ./cmd/netvis
-```
-
-The resulting `netvis` binary is placed in the current directory (it is already
-listed in `.gitignore`).
-
-Release binaries are built statically in CI (see
-[`.github/workflows/build-platform.yml`](.github/workflows/build-platform.yml)).
-
-## Test
-
-```bash
-go test ./...
-go test -race ./...
-```
-
-Tests cover packet parsing, graph aggregation and snapshot isolation, display-name
-resolution caching, whois response parsing, and WebSocket hub message routing,
-including traffic aggregation and frontend-traffic separation. Network-dependent
-lookups are stubbed in tests.
 
 ## Run
 
@@ -203,6 +160,63 @@ Buttons:
 - **Remove passive hosts** — removes hosts with no traffic within the passive
   timeout.
 
+---
+
+## Build from source
+
+```bash
+go build -o netvis ./cmd/netvis
+```
+
+The resulting `netvis` binary is placed in the current directory (it is already
+listed in `.gitignore`).
+
+Release binaries are built statically in CI (see
+[`.github/workflows/build-platform.yml`](.github/workflows/build-platform.yml)).
+
+## Requirements
+
+To build from source:
+
+- Go 1.23 or newer
+- Linux with `libpcap` development headers (cgo is used)
+
+To run NetVis:
+
+- Linux (prebuilt release binaries are statically linked and do not require
+  `libpcap` to be installed)
+- Root privileges or `CAP_NET_RAW`/`CAP_NET_ADMIN` for live capture
+
+Install libpcap headers on Debian/Ubuntu:
+
+```bash
+sudo apt install libpcap-dev
+```
+
+On Fedora/RHEL:
+
+```bash
+sudo dnf install libpcap-devel
+```
+
+On Arch:
+
+```bash
+sudo pacman -S libpcap
+```
+
+## Test
+
+```bash
+go test ./...
+go test -race ./...
+```
+
+Tests cover packet parsing, graph aggregation and snapshot isolation, display-name
+resolution caching, whois response parsing, and WebSocket hub message routing,
+including traffic aggregation and frontend-traffic separation. Network-dependent
+lookups are stubbed in tests.
+
 ## Project layout
 
 ```
@@ -255,6 +269,6 @@ them as separate blobs.
 
 ## License
 
-The default license is Apache 2.0 (see [LICENSE](LICENSE)). I want to be reasonable, 
+The default license is Apache 2.0 (see [LICENSE](LICENSE)). I want to be reasonable,
 so if the license is holding you back. Get in touch and let me know what you need.
 I'm sure we can work something out.
