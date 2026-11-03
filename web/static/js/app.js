@@ -1216,182 +1216,162 @@ function updateHostSizes() {
     }
 }
 
-function segmentsIntersect(x1,y1,x2,y2,x3,y3,x4,y4) {
-    const denom = (y4-y3)*(x2-x1) - (x4-x3)*(y2-y1);
-    if (Math.abs(denom) < 1e-10) return false;
-    const ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / denom;
-    const ub = ((x2-x1)*(y1-y3) - (y2-y1)*(x1-x3)) / denom;
-    if (ua > 1e-9 && ua < 1-1e-9 && ub > 1e-9 && ub < 1-1e-9) {
-        return true;
-    }
-    return false;
+// New blobs start at this radius before traffic-based sizing runs.
+const INITIAL_HOST_RADIUS = 22;
+// Extra padding sampled beyond the minimum non-overlapping distance when a
+// new host is anchored near a host it can connect to. Wider bands are only
+// tried when the closer bands have no room.
+const SPAWN_NEIGHBOUR_BANDS = [80, 160, 320, 640, 1280];
+const SPAWN_NEIGHBOUR_SAMPLES = 96;
+// Samples used by the centre-out search for hosts without a known peer. A
+// quadratic radial distribution puts the finest resolution near the centre.
+const SPAWN_CENTER_SAMPLES = 256;
+
+function collisionHalo() {
+    return Math.max(0, typeof settings.collisionHalo === 'number' ? settings.collisionHalo : 0);
 }
 
-function countEdgeCrossingsAtPoint(px, py) {
-    let crossings = 0;
-    // A point at edge doesn't create crossings; we check if connecting through
-    // this point would intersect other edges - but easier: count how many
-    // existing edges would be intersected by lines from this point to potential
-    // connection points? Or more directly, count edge crossings near this point
-    // by checking intersections between edges and rays - but the requirement says
-    // "where the connection edges cross as few other edges as possible"
-    // So place so that new connections don't cross many existing edges.
-    // Count crossings between a hypothetical edge from this point to anywhere
-    // and existing edges - or just count existing edge crossings in the area.
-    // Try to minimize total crossings involving edges to/from this new host.
-    for (const edge of edges.values()) {
-        const src = hostForIP(edge.srcIP);
-        const dst = hostForIP(edge.dstIP);
-        if (!src || !dst) continue;
-        // Check if a line from (px,py) to src crosses any other edge, 
-        // or just count general edge crossings in vicinity
-        // Count how many existing edges this potential position would intersect
-        // with connections to other hosts - approximate by checking intersection
-        // with all existing edges (excluding edges incident to this hypothetical host)
-        if (segmentsIntersect(px, py, src.x, src.y, dst.x, dst.y, src.x, src.y)) continue;
-    }
-    // Better approach: count how many existing edges are intersected by
-    // the shortest path/line to place it - alternatively count total number
-    // of edge-edge intersections in the neighborhood weighted toward edges
-    for (const edge of edges.values()) {
-        const src = hostForIP(edge.srcIP);
-        const dst = hostForIP(edge.dstIP);
-        if (!src || !dst) continue;
-        // Check intersection of edges that might connect to this point
-        // Count if placing here would create crossings with existing edges
-        // A simple heuristic: count how many existing edges pass near and intersect
-        for (const edge2 of edges.values()) {
-            if (edge === edge2) continue;
-            const s2 = hostForIP(edge2.srcIP);
-            const t2 = hostForIP(edge2.dstIP);
-            if (!s2 || !t2) continue;
-            if (segmentsIntersect(src.x, src.y, dst.x, dst.y, s2.x, s2.y, t2.x, t2.y)) {
-                crossings++;
-            }
+function hostInfluenceRadius(host, halo) {
+    return (host.radius || INITIAL_HOST_RADIUS) + halo;
+}
+
+// A new blob must not intersect any existing host's sphere of influence: the
+// same blob radius + halo used by collision resolution.
+function spawnPositionIsClear(x, y, radius) {
+    const halo = collisionHalo();
+    const spawnInfluence = radius + halo;
+    for (const host of hosts.values()) {
+        const minDistance = hostInfluenceRadius(host, halo) + spawnInfluence;
+        const dx = x - host.x;
+        const dy = y - host.y;
+        if (dx * dx + dy * dy < minDistance * minDistance) {
+            return false;
         }
     }
-    // Actually want to minimize crossings of connections FROM this new host
-    // to its neighbors. But at placement time, we don't know neighbors yet.
-    // Or look up - maybe place near edge and minimize crossings of edges in general area?
-    // The requirement says "prefer locations near the edge, where the connection edges cross as few other edges as possible"
-    // So overall minimize edge crossings in the graph layout? Or for the new host's connections?
-    // Try to place the new host so that its edges (when added) cross few others.
-    // So find position (near edge) that has fewest intersections between
-    // potential edges from this point to existing hosts and other existing edges.
-    return crossings;
+    return true;
 }
 
-function countCrossingsForPoint(px, py) {
-    let crossings = 0;
-    // Check intersections between hypothetical edges from (px,py) to every existing host
-    // and all existing edges
-    for (const other of hosts.values()) {
-        for (const edge of edges.values()) {
-            const src = hostForIP(edge.srcIP);
-            const dst = hostForIP(edge.dstIP);
-            if (!src || !dst) continue;
-            // Don't count if the existing edge involves 'other'?
-            if (src === other && dst === other) continue;
-            if (src === other || dst === other) {
-                // Connecting to other means this would be a parallel-ish connection to an endpoint of existing edge?
-                // Skip counting as crossing if it shares endpoint
+// Beyond this distance from the world centre every position is guaranteed to
+// be clear of all existing influence spheres.
+function maxSpawnSearchRadius(radius) {
+    const halo = collisionHalo();
+    const spawnInfluence = radius + halo;
+    const cx = world.centerX;
+    const cy = world.centerY;
+    let maxDistance = spawnInfluence;
+    for (const host of hosts.values()) {
+        const dx = host.x - cx;
+        const dy = host.y - cy;
+        const distance = Math.sqrt(dx * dx + dy * dy) +
+            hostInfluenceRadius(host, halo) + spawnInfluence;
+        if (distance > maxDistance) {
+            maxDistance = distance;
+        }
+    }
+    return maxDistance;
+}
+
+// Find the clear position closest to the world centre. Samples form a
+// random-offset spiral: radius grows monotonically, so the first clear sample
+// is the closest one the search found.
+function findClearPositionNearCenter(radius) {
+    const cx = world.centerX;
+    const cy = world.centerY;
+    if (hosts.size === 0) {
+        return { x: cx, y: cy };
+    }
+
+    const maxRadius = maxSpawnSearchRadius(radius);
+    const startAngle = Math.random() * Math.PI * 2;
+    let fallback = {
+        x: cx + Math.cos(startAngle) * maxRadius,
+        y: cy + Math.sin(startAngle) * maxRadius
+    };
+    for (let i = 0; i < SPAWN_CENTER_SAMPLES; i++) {
+        const t = i / (SPAWN_CENTER_SAMPLES - 1);
+        const distance = maxRadius * t * t;
+        // Golden angle spreads successive samples around the centre instead of
+        // repeatedly probing the same directions.
+        const angle = startAngle + i * 2.399963229728653;
+        const x = cx + Math.cos(angle) * distance;
+        const y = cy + Math.sin(angle) * distance;
+        if (i === SPAWN_CENTER_SAMPLES - 1) {
+            fallback = { x, y };
+        }
+        if (spawnPositionIsClear(x, y, radius)) {
+            return { x, y };
+        }
+    }
+    return fallback;
+}
+
+// Find a clear position near a host the new host can connect to. Candidates
+// are mostly biased toward the world centre, with some fully random
+// directions so a blocked inward side can still be escaped.
+function findClearPositionNearHosts(connectedHosts, radius) {
+    const halo = collisionHalo();
+    const spawnInfluence = radius + halo;
+    const cx = world.centerX;
+    const cy = world.centerY;
+
+    for (let bandIndex = 0; bandIndex < SPAWN_NEIGHBOUR_BANDS.length; bandIndex++) {
+        const band = SPAWN_NEIGHBOUR_BANDS[bandIndex];
+        let best = null;
+        let bestDistanceSq = Infinity;
+
+        for (let i = 0; i < SPAWN_NEIGHBOUR_SAMPLES; i++) {
+            const host = connectedHosts[i % connectedHosts.length];
+            const minDistance = hostInfluenceRadius(host, halo) + spawnInfluence;
+            const angleToCenter = Math.atan2(cy - host.y, cx - host.x);
+            const angle = Math.random() < 0.7
+                ? angleToCenter + (Math.random() - 0.5) * Math.PI * 0.9
+                : Math.random() * Math.PI * 2;
+            const distance = minDistance + Math.random() * band;
+            const x = host.x + Math.cos(angle) * distance;
+            const y = host.y + Math.sin(angle) * distance;
+            if (!spawnPositionIsClear(x, y, radius)) {
                 continue;
             }
-            if (segmentsIntersect(px, py, other.x, other.y, src.x, src.y, dst.x, dst.y)) {
-                crossings++;
+
+            const dx = x - cx;
+            const dy = y - cy;
+            const distanceSq = dx * dx + dy * dy;
+            if (distanceSq < bestDistanceSq) {
+                bestDistanceSq = distanceSq;
+                best = { x, y };
             }
         }
+
+        if (best) {
+            return best;
+        }
     }
-    return crossings;
+    return null;
 }
 
 function findBestHostPosition(connectedToIps) {
-    const margin = 60;
-    const candidates = [];
-    
-    // If we know which host this will connect to, prefer edge closest to it
-    if (connectedToIps && connectedToIps.length > 0) {
-        for (const cip of connectedToIps) {
-            const ch = hostForIP(cip);
-            if (!ch) continue;
-            // Project from center toward ch, intersect with screen edge
-            const cx = canvas.width / 2;
-            const cy = canvas.height / 2;
-            const dx = ch.x - cx;
-            const dy = ch.y - cy;
-            const len = Math.sqrt(dx*dx + dy*dy) || 1;
-            // Try to place near the edge in the direction of the connected host
-            // Find closest edge point
-            const tLeft = (margin - cx) / (dx / len);
-            const tRight = (canvas.width - margin - cx) / (dx / len);
-            const tTop = (margin - cy) / (dy / len);
-            const tBottom = (canvas.height - margin - cy) / (dy / len);
-            // Pick the smallest positive t that intersects an edge
-            const ts = [];
-            if (tLeft > 0 && Math.abs(cy + (dy/len)*tLeft) <= canvas.height) ts.push({t:tLeft, x:margin, y: cy + (dy/len)*tLeft});
-            if (tRight > 0 && Math.abs(cy + (dy/len)*tRight) <= canvas.height) ts.push({t:tRight, x:canvas.width-margin, y: cy + (dy/len)*tRight});
-            if (tTop > 0 && Math.abs(cx + (dx/len)*tTop) <= canvas.width) ts.push({t:tTop, x: cx + (dx/len)*tTop, y: margin});
-            if (tBottom > 0 && Math.abs(cx + (dx/len)*tBottom) <= canvas.width) ts.push({t:tBottom, x: cx + (dx/len)*tBottom, y: canvas.height-margin});
-            if (ts.length > 0) {
-                ts.sort((a,b) => a.t - b.t);
-                const pt = ts[0];
-                // Add candidates around this closest edge point
-                for (let da = -30; da <= 30; da += 10) {
-                    candidates.push({x: pt.x + da, y: pt.y});
-                    candidates.push({x: pt.x, y: pt.y + da});
-                }
+    const radius = INITIAL_HOST_RADIUS;
+    const connectedHosts = [];
+    if (connectedToIps) {
+        for (const ip of connectedToIps) {
+            const host = hostForIP(ip);
+            if (host && !connectedHosts.includes(host)) {
+                connectedHosts.push(host);
             }
         }
     }
-    
-    // Edge positions around the whole screen as fallback
-    const steps = 20;
-    for (let i = 0; i <= steps; i++) {
-        candidates.push({x: (canvas.width * i) / steps, y: margin});
-        candidates.push({x: (canvas.width * i) / steps, y: canvas.height - margin});
-    }
-    for (let i = 1; i < steps; i++) {
-        candidates.push({x: margin, y: (canvas.height * i) / steps});
-        candidates.push({x: canvas.width - margin, y: (canvas.height * i) / steps});
-    }
-    // Random edge-biased positions
-    for (let i = 0; i < 40; i++) {
-        const side = Math.floor(Math.random() * 4);
-        if (side === 0) candidates.push({x: Math.random() * canvas.width, y: margin + Math.random() * 40});
-        else if (side === 1) candidates.push({x: Math.random() * canvas.width, y: canvas.height - margin - Math.random() * 40});
-        else if (side === 2) candidates.push({x: margin + Math.random() * 40, y: Math.random() * canvas.height});
-        else candidates.push({x: canvas.width - margin - Math.random() * 40, y: Math.random() * canvas.height});
-    }
-    
-    let best = candidates[0] || {x: margin, y: margin};
-    let bestScore = Infinity;
-    
-    for (const c of candidates) {
-        const crossings = countCrossingsForPoint(c.x, c.y);
-        let score = crossings * 1000;
-        if (connectedToIps && connectedToIps.length > 0) {
-            for (const cip of connectedToIps) {
-                const ch = hostForIP(cip);
-                if (ch) {
-                    const dx = ch.x - c.x;
-                    const dy = ch.y - c.y;
-                    const dist = Math.sqrt(dx*dx + dy*dy);
-                    score += dist * 0.1; // prefer closer to connected host
-                }
-            }
-        }
-        for (const h of hosts.values()) {
-            const dx = h.x - c.x;
-            const dy = h.y - c.y;
-            const dist = Math.sqrt(dx*dx + dy*dy);
-            if (dist < 80) score += (80 - dist) * 10;
-        }
-        if (score < bestScore) {
-            bestScore = score;
-            best = c;
+
+    if (connectedHosts.length > 0) {
+        const nearHost = findClearPositionNearHosts(connectedHosts, radius);
+        if (nearHost) {
+            return nearHost;
         }
     }
-    return best;
+
+    // No known peer (or no room near one): start as close to the centre as
+    // possible. The world grows outward when a blob crosses an edge, so this
+    // remains valid as the graph expands.
+    return findClearPositionNearCenter(radius);
 }
 
 function createHost(ip, connectedToIps) {
@@ -1402,7 +1382,7 @@ function createHost(ip, connectedToIps) {
         return existing;
     }
 
-    // Try to place near an edge shared with a connected host.
+    // Prefer a spot near a connected host; otherwise start near the centre.
     const pos = findBestHostPosition(connectedToIps || []);
     const addresses = group === ip ? [ip] : [group, ip];
     const host = {
@@ -1416,7 +1396,7 @@ function createHost(ip, connectedToIps) {
         y: pos.y,
         vx: (Math.random() - 0.5) * 0.3,
         vy: (Math.random() - 0.5) * 0.3,
-        radius: 22,
+        radius: INITIAL_HOST_RADIUS,
         sentCount: 0,
         receivedCount: 0,
         bytesSent: 0,
@@ -1492,8 +1472,9 @@ function mergeHosts(target, source) {
 
 // Apply a host record from a snapshot or a `host` message. The backend groups
 // addresses that resolve to the same hostname; this function creates or merges
-// the corresponding blob and records every alias.
-function applyHostDetails(info) {
+// the corresponding blob and records every alias. `connectedToIps` lets a
+// snapshot place a new blob near a host it already knows it can connect to.
+function applyHostDetails(info, connectedToIps) {
     if (!info || !info.ip) {
         return null;
     }
@@ -1517,7 +1498,7 @@ function applyHostDetails(info) {
             hosts.set(group, current);
             target = current;
         } else {
-            target = current || createHost(group, []);
+            target = current || createHost(group, connectedToIps || []);
         }
     } else if (current && current !== target) {
         mergeHosts(target, current);
@@ -1601,9 +1582,37 @@ function handleMessage(msg) {
         } else {
             webPort = getWebPort();
         }
+        // Build peer lists from the snapshot edges first so newly created
+        // blobs can be placed near hosts they will connect to.
+        const neighboursByIP = new Map();
+        if (data.edges) {
+            for (const e of data.edges) {
+                if (!e.srcIP || !e.dstIP) continue;
+                let neighbours = neighboursByIP.get(e.srcIP);
+                if (!neighbours) {
+                    neighbours = [];
+                    neighboursByIP.set(e.srcIP, neighbours);
+                }
+                neighbours.push(e.dstIP);
+                neighbours = neighboursByIP.get(e.dstIP);
+                if (!neighbours) {
+                    neighbours = [];
+                    neighboursByIP.set(e.dstIP, neighbours);
+                }
+                neighbours.push(e.srcIP);
+            }
+        }
         if (data.hosts) {
             for (const h of data.hosts) {
-                const host = applyHostDetails(h);
+                const addresses = Array.isArray(h.ips) && h.ips.length ? h.ips : [h.ip];
+                const connectedToIps = [];
+                for (const addr of addresses) {
+                    const neighbours = neighboursByIP.get(addr);
+                    if (neighbours) {
+                        connectedToIps.push(...neighbours);
+                    }
+                }
+                const host = applyHostDetails(h, connectedToIps);
                 if (hostInfoHost === host) {
                     refreshHostInfo();
                 }

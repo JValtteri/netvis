@@ -316,6 +316,9 @@ frontend, and integration steps below are complete.
 - [x] Spatial indexing for collision detection (grid-based neighbor queries).
 - [x] Cache host arrays to avoid repeated allocations.
 - [x] Throttle physics updates to 30 Hz with accumulator.
+- [x] Place new blobs near a connected peer or the world centre without
+      overlapping existing hosts' influence spheres, replacing the expensive
+      edge-crossing candidate scan.
 
 ### Remaining performance improvement ideas
 
@@ -337,10 +340,6 @@ frontend, and integration steps below are complete.
       collision-pair keys instead of string keys in the processed-pair set.
 - [ ] Skip physics entirely when all hosts are below the sleep thresholds and no
       layout input, host set, or drag state has changed.
-- [ ] Optimize initial host placement: `findBestHostPosition` is
-      `O(candidates × hosts × edges)`, which can make large snapshots slow.
-      Consider simpler placement for snapshots and crossing-minimization only
-      for newly observed hosts.
 - [ ] Object pooling or a ring buffer for particles to reduce allocation and GC
       pressure.
 - [ ] Add adaptive quality controls: lower the particle budget, skip glow, or
