@@ -14,13 +14,13 @@ import (
 )
 
 func main() {
-	iface := flag.String("iface", "", "Network interface to capture on (e.g. eth0, wlan0)")
+	iface := flag.String("iface", "", "Network interface to capture on (e.g. eth0, wlan0, any)")
 	bpf := flag.String("filter", "", "BPF filter (optional)")
 	addr := flag.String("addr", ":3993", "HTTP listen address")
 	flag.Parse()
 
 	if *iface == "" {
-		log.Fatal("must specify -iface")
+		log.Fatal("must specify -iface (e.g. eth0, wlan0, any)")
 	}
 
 	g := graph.New()
