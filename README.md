@@ -72,11 +72,15 @@ Run the binary from the repository root, or from the directory extracted from a
 release archive, because the server serves the frontend from `web/static/`
 relative to the current working directory.
 
+Netvis is able to capture traffic from all **VLANs** simultaniously. Setting the 
+interface explicitly allows capturing in **promiscuous mode,** to capture third party traffic
+via a hub or a mirrored port.
+
 ### Flags
 
 | Flag | Required | Description |
 | --- | --- | --- |
-| `-iface` | yes | Network interface to capture on (e.g. `eth0`, `wlan0`, `any`). |
+| `-iface` | yes | Network interface to capture on (e.g. `eth0`, `wlan0`). Use the explicit physical interface when capturing from a hub or mirror port. |
 | `-filter` | no | BPF capture filter, e.g. `tcp port 80`, `udp`, `host 192.168.1.10`. |
 | `-addr` | no | HTTP listen address, defaults to `:3993`. |
 | `-host-ttl` | no | Remove hosts and edges idle longer than this duration, e.g. `24h`. Defaults to `0`, which keeps everything. |
@@ -88,7 +92,20 @@ relative to the current working directory.
 ip link show          # Linux
 ```
 
-You can also run with `-iface any` on Linux to capture across all interfaces.
+It's recommended to use the explicit name of the physical interface (for example `eth0` or
+`enp3s0`). This allows NetVis to put the interface into promiscuous mode so it can see traffic
+that is not addressed to the capture machine. To make use of this feature, a hub, a 
+switch mirror/SPAN port, or a network TAP is neede; otherwise the NIC
+discards other hosts' unicast traffic and only broadcast/multicast traffic
+appears in the UI.
+
+`-iface any` is available on Linux for convenience, but libpcap ignores the
+promiscuous-mode request for the `any` pseudo-device. Capturing on `any`
+therefore behaves like a non-promiscuous capture and will not show unicast
+traffic between other devices, even when the port is mirrored. The same
+limitation applies to a managed-mode Wi-Fi interface (`wlan0`), which cannot see
+other clients' unicast traffic without monitor mode; use a wired or mirror
+interface instead.
 
 ### Running without root
 
@@ -260,6 +277,15 @@ listed above (the runtime library alone is not enough).
 **No packets appear** — check the interface name, make sure traffic matches the
 BPF filter, and confirm the browser is connected (browser dev-tools WebSocket).
 Loopback traffic may need `-iface lo`.
+
+**Only broadcast/multicast traffic appears** — the capture interface is not
+receiving other hosts' unicast frames. NetVis enables promiscuous mode, but that
+only helps when the frames reach the NIC in the first place (a real hub, a switch
+mirror/SPAN port, or a TAP). A normal switch port carries only broadcast,
+multicast, and traffic to/from the capture machine. Also capture on the explicit
+physical interface rather than `any`: libpcap ignores promiscuous mode for the
+`any` pseudo-device. Compare with `sudo tcpdump -i <iface> -nn -e` to see whether
+the unicast frames arrive at the machine at all.
 
 **Reverse DNS / whois is slow or empty** — lookups run asynchronously with a 3 s
 reverse-DNS timeout; when no answer is available the label stays empty. Whois
